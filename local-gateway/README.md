@@ -1,10 +1,11 @@
 # local-gateway
 
-A loopback FastAPI gateway in front of a local ComfyUI install. This is the
-P1 walking skeleton: `GET /health` only. The four generation routes
-(`/tts/generate`, `/image/generate`, `/image/edit`, `/video/generate`) are
-not implemented yet, and `/health` reports each of them as
-`implemented: false`.
+A loopback FastAPI gateway in front of a local ComfyUI install. P1 provides
+`GET /health`; P2 adds the first generation route, `POST /tts/generate`,
+which supports voice clone only (mode `clone`, `mp3` or `wav`, reference
+audio inline as `ref_audio_base64`, results inline as `audio_base64`).
+Custom voice and voice design are not implemented on this gateway. The
+image and video routes stay `implemented: false` until later phases.
 
 ## Start order
 
@@ -52,6 +53,31 @@ returns HTTP 503 with the full check results while anything is missing, and
 `ready` never means the generation routes work: check each route's
 `implemented` flag. The four routes stay `implemented: false` until their
 real generation acceptance passes in later phases.
+
+## TTS voice clone
+
+Point the toolkit at the route (root `.env`):
+
+```
+LOCAL_TTS_ENDPOINT_URL=http://127.0.0.1:8123/tts/generate
+```
+
+Then, for example:
+
+```bash
+uv run tools/qwen3_tts.py --cloud local --text "Hello" \
+  --ref-audio ref.mp3 --ref-text "the transcript" --output out.mp3
+```
+
+Requirements beyond ComfyUI and the Qwen3-TTS weights:
+
+- `ffmpeg` and `ffprobe` must be on the gateway process's PATH; `/health`
+  reports both under `dependencies` and the gateway is not `ready` without
+  them.
+- The `Qwen3-TTS-12Hz-1.7B-Base` and `Qwen3-TTS-Tokenizer-12Hz` directories
+  under `COMFYUI_MODELS_ROOT/TTS/` must exist and be non-empty.
+- One clone request runs at a time per gateway process (serialized on
+  purpose: threads, batches and VRAM compete); `/health` stays responsive.
 
 ## Tests
 

@@ -11,7 +11,7 @@
 |---|---|---|---|
 | **P0** 仓库准备 | fork、upstream、工作分支、设计文档首 commit | origin/upstream URL 与分支名正确 | S |
 | **P1** 链路骨架 | `cloud_gpu.py` local 分发、网关与注册表、ComfyUI 客户端、`/health` | `curl --fail-with-body .../health` 返回 `ready=true`、`models_ready=true`；缺模型测试给出可执行修复提示 | M |
-| **P2** TTS 路由 | `/tts/generate`、三种 TTS 模式、`qwen3_tts.py` 与 `voiceover.py` 接 local | custom_voice、voiceover、voice_design 均产出非空音频；local clone 不触发外部上传 | M |
+| **P2** TTS 路由 | `/tts/generate`、clone 单模式、`qwen3_tts.py` 与 `voiceover.py` 接 local | clone MP3、clone WAV、voiceover clone 三项真实生成通过；local clone 不触发外部上传 | M |
 | **P3** 图像路由 | `/image/generate`、`/image/edit`、新 `tools/qwen_image.py` | generate 出 1024x1024 PNG；edit 用该图产出新 PNG | M |
 | **P4** 视频路由 | `/video/generate`、新 `tools/h3_video.py` | t2v/i2v 出 MP4；t2v 实测 124 帧、24 fps | L |
 | **P5** 集成收尾 | `video_job` 全链路、零成本计量、`verify_setup --local`、registry、文档与 CI | Local 检查退出 0；异步 job 到 `phase=done`，estimate/actual/receipts 均为数值 0；MP4 有效 | L |
@@ -49,7 +49,11 @@ uvx ruff check --select F821,F811,F822,F823 scripts/ tools/ local-gateway/
 git remote get-url origin
 git remote get-url upstream
 git branch --show-current
-uv run tools/copy_lint.py docs/local-comfyui-provider-plan.md docs/local-comfyui-provider-roadmap.md
+uv run tools/copy_lint.py \
+  docs/local-comfyui-provider-plan.md \
+  docs/local-comfyui-provider-roadmap.md \
+  docs/local-comfyui-provider-p0-p1-design.md \
+  docs/superpowers/plans/2026-11-17-local-comfyui-p0-p1.md
 ```
 
 前两条分别显示 fork 与上游，分支名为 `feat/local-comfyui-provider`。`git remote -v` 通常有四行，不再用「两行」作判据。
@@ -81,41 +85,44 @@ curl --noproxy '*' --fail-with-body http://127.0.0.1:8123/health
 
 响应须含 GPU 信息、附录 B 全部必需项、`ready=true`、`models_ready=true`。另用临时测试配置制造缺模型，确认 HTTP 503 与修复提示；不得通过改名真实权重制造故障。
 
-### P2 TTS 路由
+### P2 TTS 路由（clone-only 修订）
 
-- [ ] **开工第一步**：用 `/object_info` 校验 AILab 三模式节点、`LoadAudio`、`SaveAudioAdvanced` 及真实参数。校验不过，不写路由。
-- [ ] `POST /tts/generate`：`mode` 选择 `AILab_Qwen3TTSCustomVoice`、`AILab_Qwen3TTSVoiceClone`、`AILab_Qwen3TTSVoiceDesign`；注册表首条目 `qwen3-tts-1.7B`，固定 `model_size=1.7B`，声明支持的 modes 与 output formats。运行时确认 VoiceDesign 只接受 1.7B，未来 0.6B 变体不得宣称支持该模式。
-- [ ] 模板用 `/object_info` 和自行建立的节点连接生成，不复制第三方 example workflow JSON。mp3/wav 必须按真实编码返回；需要时由网关用 FFmpeg 从 ComfyUI 音频输出转码，不得改扩展名伪装格式。
-- [ ] clone：`ref_audio_base64` 上传至 ComfyUI input，再由 `LoadAudio` 提供 AUDIO。用真实音频验证上传方式，不假定 `/upload/image` 只接受图片。
-- [ ] `tools/qwen3_tts.py`：`--cloud` 与 `generate_audio(cloud=...)` 加 local，新增自由字符串 `--model` 并传入 payload。**local clone 直接编码参考音频，跳过 `upload_to_storage()` 和结果 R2 上传**；云路径保持原行为。
-- [ ] `tools/voiceover.py`：`--cloud` 加 local，新增 `--qwen-model` 透传 Qwen 变体。现有 `--model` 是 ElevenLabs 专用，不复用。
-- [ ] 单测：三模式模板补丁、output format、model 透传、local clone base64 分支、外部上传函数零调用、网关错误透传。
+依据 2026-11-17 clone-only 设计规格（docs/superpowers/specs/2026-11-17-local-comfyui-p2-design.md）执行，CustomVoice 与 VoiceDesign 移出本期。
 
-验收：
+- [ ] **开工第一步**：用 `/object_info` 校验 `AILab_Qwen3TTSVoiceClone_Advanced`、`LoadAudio`、`SaveAudioAdvanced` 及真实参数。校验不过，不写路由。
+- [ ] `POST /tts/generate`：仅 `mode=clone`；注册表首条目 `qwen3-tts-1.7B`，固定 `model_size=1.7B`，`modes=(clone,)`，`output_formats=(mp3, wav)`。非 clone 返回 422 `mode_unsupported`；`ref_audio_url`/`r2` 返回 422 `external_url_unsupported`。
+- [ ] 模板原创生成，不复制第三方 example workflow JSON。MP3 由 ComfyUI 直接输出（`format="mp3"` + `format.quality="V0"`）；WAV 由 FLAC 中间文件用 FFmpeg `pcm_s16le` 真实转码，不改扩展名伪装格式。
+- [ ] clone：`ref_audio_base64` 上传至 ComfyUI input，再由 `LoadAudio` 提供 AUDIO；每请求上传一次，批量逐项有序执行，任一失败无部分结果；deadline 为 `270 * max(1, item_count // 3 + 1)`，覆盖 lock、上传、submit/poll/view/ffprobe/FFmpeg；单进程 lock 串行化。
+- [ ] `tools/qwen3_tts.py`：`--cloud` 加 local，新增自由字符串 `--model` 并传入 payload。**local clone 直接编码参考音频，跳过 `upload_to_storage()` 和结果 R2 上传**；云路径保持原行为；`--setup --cloud local` 退出码 2。
+- [ ] `tools/voiceover.py`：`--cloud` 加 local，新增 `--qwen-model` 透传 Qwen 变体，新增默认 300 的 `--timeout`；local 所有 clone 路径必须 `--ref-audio`+`--ref-text`；brand VoiceDesign 与内置 speaker 在 local 下拒绝。现有 `--model` 是 ElevenLabs 专用，不复用。
+- [ ] 单测：模板补丁、output format、model/timeout 透传、local clone base64 分支、外部上传下载函数零调用、网关错误契约、health dependencies 与 fallback 工厂。全部 fake 网络。
+
+验收（三项真实 clone 生成，素材见规格第 14 节）：
 
 ```bash
 set -euo pipefail
 mkdir -p scratch/local-comfyui/p2
-uv run tools/qwen3_tts.py --cloud local --model qwen3-tts-1.7B \
-  --text "测试本地链路" --output scratch/local-comfyui/p2/custom.mp3
+REF_AUDIO='C:/Users/kenyo/Downloads/Music/voice_02.mp3'
+REF_TEXT='为什么不用suno及类似的音乐生成平台? 因为贵，对游戏需要的音乐生成不友好，而且suno这种直接生成成曲的基本无法对成品做调整'
 
-printf '%s\n' '测试 voiceover 本地链路' > scratch/local-comfyui/p2/voiceover.txt
+uv run tools/qwen3_tts.py --cloud local --model qwen3-tts-1.7B \
+  --text "这段声音是在本地网关生成的克隆音频，用来确认参考音频上传和声音克隆已经完整跑通。" \
+  --ref-audio "$REF_AUDIO" --ref-text "$REF_TEXT" \
+  --output scratch/local-comfyui/p2/clone.mp3
+
+uv run tools/qwen3_tts.py --cloud local --model qwen3-tts-1.7B \
+  --text "这是同一条本地克隆链路生成的 WAV 文件，用来验证 FLAC 到 WAV 的真实转码过程。" \
+  --ref-audio "$REF_AUDIO" --ref-text "$REF_TEXT" --format wav \
+  --output scratch/local-comfyui/p2/clone.wav
+
+printf '%s\n' '测试 voiceover 本地克隆链路' > scratch/local-comfyui/p2/voiceover.txt
 uv run tools/voiceover.py --provider qwen3 --cloud local --qwen-model qwen3-tts-1.7B \
-  --script scratch/local-comfyui/p2/voiceover.txt --output scratch/local-comfyui/p2/voiceover.mp3
-
-uv run tools/qwen3_tts.py --cloud local --model qwen3-tts-1.7B \
-  --text "This is a local voice design test." \
-  --design-instruct "A calm, warm narrator" --format wav \
-  --output scratch/local-comfyui/p2/designed.wav
-
-for name in custom.mp3 voiceover.mp3 designed.wav; do
-  duration="$(ffprobe -v error -show_entries format=duration \
-    -of default=noprint_wrappers=1:nokey=1 "scratch/local-comfyui/p2/$name")"
-  uv run python -I -c 'import sys; assert float(sys.argv[1]) > 0' "$duration"
-done
+  --script scratch/local-comfyui/p2/voiceover.txt \
+  --ref-audio "$REF_AUDIO" --ref-text "$REF_TEXT" \
+  --output scratch/local-comfyui/p2/voiceover.mp3
 ```
 
-三次生成都须成功，时长均大于 0。clone 的实现与无外部上传单测是收口必需项；真实 clone 冒烟仍为次级验证，未跑时文档不得写成已实测。
+三次生成都须成功，ffprobe 时长大于 0，clone.wav 编码为 `pcm_s16le`；最终 `/health` 断言见规格第 14.3 节。checkbox 只能在三项生成、health 与完整回归全部通过后勾选。
 
 ### P3 图像路由 + `qwen_image.py`
 
