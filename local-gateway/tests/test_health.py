@@ -39,8 +39,8 @@ class RegistryTests(unittest.TestCase):
         entry = registry.model_by_key("qwen3-tts-1.7B")
         self.assertEqual(entry.required_directories, ())
         self.assertEqual(entry.required_nonempty_directories, (
-            "TTS/Qwen3-TTS-12Hz-1.7B-Base",
-            "TTS/Qwen3-TTS-Tokenizer-12Hz",
+            "TTS/Qwen3-TTS/Qwen3-TTS-12Hz-1.7B-Base",
+            "TTS/Qwen3-TTS/Qwen3-TTS-Tokenizer-12Hz",
         ))
         self.assertEqual(entry.required_nodes, (
             "AILab_Qwen3TTSVoiceClone_Advanced",
@@ -195,8 +195,8 @@ def object_info_fixture(**overrides):
 def build_model_tree(root, *, include=("tts", "image", "video"),
                      optional_audio_vae=False, empty_tts_dirs=False):
     if "tts" in include:
-        for rel in ("TTS/Qwen3-TTS-12Hz-1.7B-Base",
-                    "TTS/Qwen3-TTS-Tokenizer-12Hz"):
+        for rel in ("TTS/Qwen3-TTS/Qwen3-TTS-12Hz-1.7B-Base",
+                    "TTS/Qwen3-TTS/Qwen3-TTS-Tokenizer-12Hz"):
             d = root / rel
             d.mkdir(parents=True, exist_ok=True)
             if not empty_tts_dirs:
@@ -334,8 +334,8 @@ class HealthAggregationTests(unittest.TestCase):
         tts = payload["models"]["qwen3-tts-1.7B"]
         self.assertFalse(tts["files_ready"])
         self.assertEqual(tts["missing_files"], [
-            "TTS/Qwen3-TTS-12Hz-1.7B-Base",
-            "TTS/Qwen3-TTS-Tokenizer-12Hz",
+            "TTS/Qwen3-TTS/Qwen3-TTS-12Hz-1.7B-Base",
+            "TTS/Qwen3-TTS/Qwen3-TTS-Tokenizer-12Hz",
         ])
 
     def test_empty_tts_weight_directory_is_reported_as_missing(self):
@@ -348,8 +348,8 @@ class HealthAggregationTests(unittest.TestCase):
         tts = payload["models"]["qwen3-tts-1.7B"]
         self.assertFalse(tts["files_ready"])
         self.assertEqual(tts["missing_files"], [
-            "TTS/Qwen3-TTS-12Hz-1.7B-Base",
-            "TTS/Qwen3-TTS-Tokenizer-12Hz",
+            "TTS/Qwen3-TTS/Qwen3-TTS-12Hz-1.7B-Base",
+            "TTS/Qwen3-TTS/Qwen3-TTS-Tokenizer-12Hz",
         ])
 
     def test_missing_node_and_loader_value_are_reported(self):

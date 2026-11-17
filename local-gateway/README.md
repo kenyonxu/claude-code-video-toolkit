@@ -75,7 +75,7 @@ Requirements beyond ComfyUI and the Qwen3-TTS weights:
   reports both under `dependencies` and the gateway is not `ready` without
   them.
 - The `Qwen3-TTS-12Hz-1.7B-Base` and `Qwen3-TTS-Tokenizer-12Hz` directories
-  under `COMFYUI_MODELS_ROOT/TTS/` must exist and be non-empty.
+  under `COMFYUI_MODELS_ROOT/TTS/Qwen3-TTS/` must exist and be non-empty.
 - One clone request runs at a time per gateway process (serialized on
   purpose: threads, batches and VRAM compete); `/health` stays responsive.
 

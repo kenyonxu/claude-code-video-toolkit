@@ -49,8 +49,8 @@ MODEL_ENTRIES: tuple[ModelEntry, ...] = (
         capability="tts",
         required_directories=(),
         required_nonempty_directories=(
-            "TTS/Qwen3-TTS-12Hz-1.7B-Base",
-            "TTS/Qwen3-TTS-Tokenizer-12Hz",
+            "TTS/Qwen3-TTS/Qwen3-TTS-12Hz-1.7B-Base",
+            "TTS/Qwen3-TTS/Qwen3-TTS-Tokenizer-12Hz",
         ),
         required_nodes=(
             "AILab_Qwen3TTSVoiceClone_Advanced",
