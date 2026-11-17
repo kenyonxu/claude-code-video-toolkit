@@ -10,24 +10,36 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from local_gateway.comfyui import ComfyUIClient, ComfyUIError, ComfyUITimeout  # noqa: E402
+from local_gateway.comfyui import (  # noqa: E402
+    ComfyUIClient, ComfyUIError, ComfyUITimeout, input_names, input_values,
+)
 
 BASE = "http://127.0.0.1:9188"
 
 
 class FakeResponse:
     def __init__(self, status_code=200, json_data=None, content=b"", text="",
-                 json_error=False):
+                 json_error=False, chunks=None):
         self.status_code = status_code
         self._json_data = json_data
         self.content = content
         self.text = text
         self._json_error = json_error
+        self._chunks = chunks
+        self.closed = False
+
+    def iter_content(self, chunk_size=None):
+        if self._chunks is not None:
+            yield from self._chunks
+
+    def close(self):
+        self.closed = True
 
     def json(self):
         if self._json_error:
@@ -111,7 +123,7 @@ class HttpClientTests(unittest.TestCase):
 
     def test_view_sends_three_query_params_and_returns_bytes(self):
         s = FakeSession()
-        s.get_response = FakeResponse(content=b"PNGDATA")
+        s.get_response = FakeResponse(chunks=[b"PNGDATA"])
         data = make_client(s).view("img_00001_.png", "history", "temp")
         self.assertEqual(data, b"PNGDATA")
         url, kwargs = s.get_calls[0]
@@ -122,6 +134,7 @@ class HttpClientTests(unittest.TestCase):
 
     def test_view_defaults_subfolder_empty_and_type_output(self):
         s = FakeSession()
+        s.get_response = FakeResponse(chunks=[b"P"])
         make_client(s).view("x.png")
         self.assertEqual(s.get_calls[0][1]["params"], {
             "filename": "x.png", "subfolder": "", "type": "output",
@@ -171,6 +184,124 @@ class HttpClientTests(unittest.TestCase):
         with self.assertRaises(ComfyUIError) as ctx:
             make_client(Broken()).system_stats()
         self.assertEqual(ctx.exception.code, "comfyui_unreachable")
+
+
+class RequestErrorClassificationTests(unittest.TestCase):
+    def test_read_timeout_maps_to_comfyui_request_timeout(self):
+        class Slow(FakeSession):
+            def get(self, url, **kwargs):
+                raise requests.exceptions.ReadTimeout("read timed out")
+
+        with self.assertRaises(ComfyUIError) as ctx:
+            make_client(Slow()).system_stats()
+        self.assertEqual(ctx.exception.code, "comfyui_request_timeout")
+
+    def test_connect_timeout_is_a_request_timeout_not_unreachable(self):
+        class Slow(FakeSession):
+            def get(self, url, **kwargs):
+                raise requests.exceptions.ConnectTimeout("connect timed out")
+
+        with self.assertRaises(ComfyUIError) as ctx:
+            make_client(Slow()).system_stats()
+        self.assertEqual(ctx.exception.code, "comfyui_request_timeout")
+
+    def test_invalid_url_maps_to_comfyui_error(self):
+        class Bad(FakeSession):
+            def get(self, url, **kwargs):
+                raise requests.exceptions.InvalidURL("bad url")
+
+        with self.assertRaises(ComfyUIError) as ctx:
+            make_client(Bad()).system_stats()
+        self.assertEqual(ctx.exception.code, "comfyui_error")
+
+    def test_generic_request_exception_maps_to_comfyui_error(self):
+        class Odd(FakeSession):
+            def get(self, url, **kwargs):
+                raise requests.exceptions.ChunkedEncodingError("broken chunk")
+
+        with self.assertRaises(ComfyUIError) as ctx:
+            make_client(Odd()).system_stats()
+        self.assertEqual(ctx.exception.code, "comfyui_error")
+
+
+class BoundedViewTests(unittest.TestCase):
+    def test_view_streams_chunks_and_returns_joined_bytes(self):
+        s = FakeSession()
+        s.get_response = FakeResponse(chunks=[b"AAA", b"BBB"])
+        data = make_client(s).view("out.mp3", "sub", "output")
+        self.assertEqual(data, b"AAABBB")
+        url, kwargs = s.get_calls[0]
+        self.assertEqual(url, BASE + "/view")
+        self.assertTrue(kwargs["stream"])
+        self.assertTrue(s.get_response.closed)
+
+    def test_view_over_limit_aborts_with_generation_failed(self):
+        s = FakeSession()
+        s.get_response = FakeResponse(chunks=[b"A" * 10, b"B" * 10])
+        with self.assertRaises(ComfyUIError) as ctx:
+            make_client(s).view("big.bin", max_bytes=15)
+        self.assertEqual(ctx.exception.code, "generation_failed")
+        self.assertIn("15", ctx.exception.message)
+
+    def test_view_exactly_at_limit_succeeds(self):
+        s = FakeSession()
+        s.get_response = FakeResponse(chunks=[b"A" * 10, b"B" * 5])
+        data = make_client(s).view("ok.bin", max_bytes=15)
+        self.assertEqual(data, b"A" * 10 + b"B" * 5)
+
+    def test_view_http_error_is_comfyui_error_and_not_streamed(self):
+        s = FakeSession()
+        s.get_response = FakeResponse(status_code=500, text="boom",
+                                      chunks=[b"never"])
+        with self.assertRaises(ComfyUIError) as ctx:
+            make_client(s).view("x.png")
+        self.assertEqual(ctx.exception.code, "comfyui_error")
+
+
+class PollSleepTests(unittest.TestCase):
+    def test_wait_truncates_sleep_to_remaining_deadline(self):
+        s = FakeSession()
+        s.get_response = FakeResponse(json_data={})  # never finishes
+        sleeps = []
+        with mock.patch.object(time, "sleep", side_effect=sleeps.append):
+            with self.assertRaises(ComfyUITimeout):
+                make_client(s).wait("p1", deadline=time.monotonic() + 0.05,
+                                    poll_interval=5.0)
+        self.assertTrue(sleeps)
+        for slept in sleeps:
+            self.assertLessEqual(slept, 0.05)
+
+
+class SchemaHelperTests(unittest.TestCase):
+    def test_input_values_current_dict_shape(self):
+        meta = {"input": {"required": {"model_size": [["0.6B", "1.7B"], {}]}}}
+        self.assertEqual(input_values(meta, "model_size"), ["0.6B", "1.7B"])
+
+    def test_input_values_legacy_list_shape(self):
+        meta = {"input": {"required": [["model_size", ["0.6B", "1.7B"]]]}}
+        self.assertEqual(input_values(meta, "model_size"), ["0.6B", "1.7B"])
+
+    def test_input_values_dynamic_combo_v3_reads_option_keys(self):
+        meta = {"input": {"required": {"format": [
+            "COMFY_DYNAMICCOMBO_V3",
+            {"options": [{"key": "flac"}, {"key": "mp3"}]},
+        ]}}}
+        self.assertEqual(input_values(meta, "format"), ["flac", "mp3"])
+
+    def test_input_values_dynamic_combo_without_options_is_none(self):
+        meta = {"input": {"required": {"format": ["COMBO", "COMBO"]}}}
+        self.assertIsNone(input_values(meta, "format"))
+
+    def test_input_values_non_combo_type_is_none(self):
+        meta = {"input": {"required": {"target_text": ["STRING", {"multiline": True}]}}}
+        self.assertIsNone(input_values(meta, "target_text"))
+
+    def test_input_names_covers_both_shapes_and_optional(self):
+        meta = {"input": {
+            "required": [["seed", "INT"]],
+            "optional": {"language": [["Auto", "Chinese"], {}]},
+        }}
+        self.assertEqual(input_names(meta), {"seed", "language"})
 
 
 def success_history(prompt_id):

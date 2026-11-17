@@ -14,6 +14,9 @@ import requests
 
 DEFAULT_TIMEOUT = (2, 10)
 
+VIEW_CHUNK_BYTES = 256 * 1024
+DEFAULT_VIEW_MAX_BYTES = 64 * 1024 * 1024  # 64 MiB per /view response
+
 
 class ComfyUIError(Exception):
     """Structured client error: message, machine-readable code, optional details."""
@@ -37,6 +40,55 @@ class ComfyUITimeout(ComfyUIError):
             code="comfyui_timeout",
         )
         self.prompt_id = prompt_id
+
+
+def input_values(meta: dict, input_name: str) -> list | None:
+    """Combo choices for one node input, or None when it is not a combo.
+
+    Understands the current dict-keyed object_info shape, the legacy list
+    shape, and ComfyUI 0.45.0's COMFY_DYNAMICCOMBO_V3 shape, whose options
+    are objects with a string `key` (flac/mp3/opus and their quality fields).
+    """
+    inputs = meta.get("input", {}) if isinstance(meta, dict) else {}
+    for section in ("required", "optional"):
+        fields = inputs.get(section)
+        if isinstance(fields, dict):
+            spec = fields.get(input_name)
+            if (isinstance(spec, (list, tuple)) and spec
+                    and isinstance(spec[0], list)):
+                return spec[0]
+            if (isinstance(spec, (list, tuple)) and len(spec) >= 2
+                    and spec[0] == "COMFY_DYNAMICCOMBO_V3"
+                    and isinstance(spec[1], dict)):
+                options = spec[1].get("options")
+                if isinstance(options, list):
+                    return [option["key"] for option in options
+                            if isinstance(option, dict)
+                            and isinstance(option.get("key"), str)]
+                return None
+            if spec is not None:
+                return None
+        elif isinstance(fields, list):
+            for spec in fields:
+                if (isinstance(spec, (list, tuple)) and len(spec) >= 2
+                        and spec[0] == input_name):
+                    return spec[1] if isinstance(spec[1], list) else None
+    return None
+
+
+def input_names(meta: dict) -> set[str]:
+    """Input names across required+optional, both object_info shapes."""
+    names: set[str] = set()
+    inputs = meta.get("input", {}) if isinstance(meta, dict) else {}
+    for section in ("required", "optional"):
+        fields = inputs.get(section)
+        if isinstance(fields, dict):
+            names.update(str(k) for k in fields)
+        elif isinstance(fields, list):
+            for entry in fields:
+                if isinstance(entry, (list, tuple)) and entry:
+                    names.add(str(entry[0]))
+    return names
 
 
 class ComfyUIClient:
@@ -67,10 +119,26 @@ class ComfyUIClient:
             if method == "GET":
                 return self._session.get(url, timeout=self._timeout, **kwargs)
             return self._session.post(url, timeout=self._timeout, **kwargs)
-        except requests.exceptions.RequestException as e:
+        except requests.exceptions.Timeout as e:
+            raise ComfyUIError(
+                f"ComfyUI HTTP request timed out ({method} {path}): {e}",
+                code="comfyui_request_timeout",
+            ) from e
+        except requests.exceptions.ConnectionError as e:
             raise ComfyUIError(
                 f"Cannot reach ComfyUI at {self.base_url}: {e}",
                 code="comfyui_unreachable",
+            ) from e
+        except (requests.exceptions.InvalidURL,
+                requests.exceptions.MissingSchema) as e:
+            raise ComfyUIError(
+                f"Invalid ComfyUI URL for {method} {path}: {e}",
+                code="comfyui_error",
+            ) from e
+        except requests.exceptions.RequestException as e:
+            raise ComfyUIError(
+                f"ComfyUI request failed for {method} {path}: {e}",
+                code="comfyui_error",
             ) from e
 
     def _get_json(self, path: str, params: dict | None = None) -> dict:
@@ -138,19 +206,43 @@ class ComfyUIClient:
         """GET /history/{prompt_id}; callers treat a missing id as not-finished."""
         return self._get_json(f"/history/{quote(prompt_id)}")
 
-    def view(self, filename: str, subfolder: str = "", file_type: str = "output") -> bytes:
-        """GET /view with the three query parameters; returns raw bytes."""
+    def view(self, filename: str, subfolder: str = "", file_type: str = "output",
+             max_bytes: int = DEFAULT_VIEW_MAX_BYTES) -> bytes:
+        """GET /view streamed in chunks and bounded by max_bytes.
+
+        Reading stops (and the response is closed) as soon as the running
+        total exceeds max_bytes, so an oversized or hostile output cannot
+        make the gateway allocate unbounded memory. Overflow raises
+        generation_failed per the P2 spec.
+        """
         response = self._request(
-            "GET", "/view",
+            "GET", "/view", stream=True,
             params={"filename": filename, "subfolder": subfolder, "type": file_type},
         )
         if response.status_code != 200:
+            response.close()
             raise ComfyUIError(
                 f"ComfyUI returned HTTP {response.status_code} for GET /view:"
                 f" {response.text[:200]}",
                 code="comfyui_error",
             )
-        return response.content
+        chunks: list[bytes] = []
+        total = 0
+        try:
+            for chunk in response.iter_content(chunk_size=VIEW_CHUNK_BYTES):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > max_bytes:
+                    raise ComfyUIError(
+                        f"ComfyUI /view output for {filename!r} exceeds the"
+                        f" {max_bytes}-byte limit after {total} bytes.",
+                        code="generation_failed",
+                    )
+                chunks.append(chunk)
+        finally:
+            response.close()
+        return b"".join(chunks)
 
     def upload(self, filename: str, content: bytes,
                content_type: str = "application/octet-stream") -> dict:
@@ -197,4 +289,4 @@ class ComfyUIClient:
                     )
             if time.monotonic() >= deadline:
                 raise ComfyUITimeout(prompt_id, deadline)
-            time.sleep(poll_interval)
+            time.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))

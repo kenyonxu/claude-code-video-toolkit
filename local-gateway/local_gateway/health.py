@@ -13,7 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from . import registry
-from .comfyui import ComfyUIError, ComfyUIClient
+from .comfyui import ComfyUIError, ComfyUIClient, input_values as _input_values
 from .config import GatewaySettings
 
 ClientFactory = Callable[[str], ComfyUIClient]
@@ -35,6 +35,14 @@ def _err(code: str, scope: str, message: str, action: str) -> dict:
 
 
 def _comfyui_error(e: ComfyUIError) -> dict:
+    if e.code == "comfyui_request_timeout":
+        return _err(
+            "comfyui_request_timeout", "comfyui",
+            f"ComfyUI was too slow to answer (request timeout): {e.message}",
+            "A single ComfyUI HTTP request exceeded the gateway's short"
+            " timeout. Check ComfyUI load and its console log; no running"
+            " ComfyUI job was cancelled.",
+        )
     if e.code == "comfyui_unreachable":
         return _err(
             "comfyui_unreachable", "comfyui",
@@ -81,31 +89,6 @@ def _check_files(entry: registry.ModelEntry, models_root: str):
         if (root / rel).is_file():
             optional_present.append(rel)
     return ok, missing, optional_present
-
-
-def _input_values(meta: dict, input_name: str) -> list | None:
-    """Return combo choices from both current and legacy object_info shapes.
-
-    ComfyUI 0.45.0 uses required/optional dicts keyed by input name. Older
-    snapshots used a list of [input_name, choices, ...] entries. The client
-    has already unwrapped the single-node envelope before this function runs.
-    """
-    inputs = meta.get("input", {}) if isinstance(meta, dict) else {}
-    for section in ("required", "optional"):
-        fields = inputs.get(section)
-        if isinstance(fields, dict):
-            spec = fields.get(input_name)
-            if (isinstance(spec, (list, tuple)) and spec
-                    and isinstance(spec[0], list)):
-                return spec[0]
-            if spec is not None:
-                return None
-        elif isinstance(fields, list):
-            for spec in fields:
-                if (isinstance(spec, (list, tuple)) and len(spec) >= 2
-                        and spec[0] == input_name):
-                    return spec[1] if isinstance(spec[1], list) else None
-    return None
 
 
 def _check_nodes(entry: registry.ModelEntry, object_info_cache: dict,

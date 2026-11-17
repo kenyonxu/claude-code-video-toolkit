@@ -467,6 +467,22 @@ class HealthAggregationTests(unittest.TestCase):
                          {"qwen3-tts-1.7B", "qwen-image-2.1", "minimax-h3-fl2va"})
         self.assertTrue(all(not r["available"] for r in payload["routes"].values()))
 
+    def test_request_timeout_error_action_does_not_say_start_comfyui(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_model_tree(root)
+            client = FakeClient(
+                exc=ComfyUIError("read timed out", code="comfyui_request_timeout"))
+            payload, status = health.build_health_payload(
+                self.settings_for(root), lambda url: client)
+        self.assertEqual(status, 503)
+        codes = [e["code"] for e in payload["errors"]]
+        self.assertIn("comfyui_request_timeout", codes)
+        error = next(e for e in payload["errors"]
+                     if e["code"] == "comfyui_request_timeout")
+        self.assertNotIn("Start ComfyUI", error["action"])
+        self.assertIn("timeout", error["message"].lower())
+
 
 class ServerTests(unittest.TestCase):
     def make_app(self, root, client):
