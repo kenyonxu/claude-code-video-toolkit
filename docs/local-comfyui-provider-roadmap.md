@@ -30,6 +30,7 @@
 
 ```bash
 uv run --extra youtube python -m unittest discover -s tests/python -p 'test_*.py' -v
+uv run --directory local-gateway python -m unittest discover -s tests -p 'test_*.py' -v
 uvx ruff check --select F821,F811,F822,F823 scripts/ tools/ local-gateway/
 ```
 

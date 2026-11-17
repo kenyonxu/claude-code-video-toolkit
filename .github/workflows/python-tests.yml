@@ -1,6 +1,7 @@
 name: Python tests
 
-# The unit tests in tests/python (video jobs, qc.py, sync_check.py, pick_music.py, audition.py, ltx_extend.py).
+# The unit tests in tests/python (video jobs, qc.py, sync_check.py, pick_music.py, audition.py, ltx_extend.py)
+# plus the local-gateway tests in local-gateway/tests (its own uv project).
 # Lint Python only checks undefined names; this runs the tests themselves.
 on:
   pull_request:
@@ -9,6 +10,7 @@ on:
       - 'lib/blender/**'
       - 'scripts/**'
       - 'tests/python/**'
+      - 'local-gateway/**'
       - 'templates/concept-explainer-short/**'
       - 'kits/**'
       - 'skills/video-toolkit/**'
@@ -24,6 +26,7 @@ on:
       - 'lib/blender/**'
       - 'scripts/**'
       - 'tests/python/**'
+      - 'local-gateway/**'
       - 'templates/concept-explainer-short/**'
       - 'kits/**'
       - 'skills/video-toolkit/**'
@@ -51,3 +54,6 @@ jobs:
 
       - name: Run tests
         run: uv run --extra youtube python -m unittest discover -s tests/python -p 'test_*.py' -v
+
+      - name: Run gateway tests
+        run: uv run --directory local-gateway python -m unittest discover -s tests -p 'test_*.py' -v
