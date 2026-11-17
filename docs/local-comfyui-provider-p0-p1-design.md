@@ -46,7 +46,7 @@ P0/P1 不做以下工作：
 
 ```bash
 gh auth status
-git status --short --branch
+git status --short --branch --untracked-files=all
 git remote -v
 git show-ref --verify --quiet refs/heads/feat/local-comfyui-provider; test $? -eq 1
 ```
@@ -84,7 +84,10 @@ uv run tools/copy_lint.py \
   docs/local-comfyui-provider-roadmap.md \
   docs/local-comfyui-provider-p0-p1-design.md \
   docs/superpowers/plans/2026-11-17-local-comfyui-p0-p1.md
+git status --short --branch --untracked-files=all
 ```
+
+`git status` 输出必须只显示 `## feat/local-comfyui-provider...` 与已提交文件，`--untracked-files=all` 确认没有漏提交的验收产物。
 
 P0 没有代码改动，不要求运行 Python 测试。P0 checkbox 只能在远程、分支、文档和首 commit 全部完成后勾选。
 
@@ -376,7 +379,7 @@ ready = config_valid && comfyui.reachable && models_ready
 `start_gateway.bat` 使用脚本所在目录，不要求调用者先 cd：
 
 ```bat
-uv run --directory "%~dp0" uvicorn local_gateway.server:app --host 127.0.0.1 --port 8123
+uv run --directory "%~dp0." uvicorn local_gateway.server:app --host 127.0.0.1 --port 8123
 ```
 
 网关 README 必须说明：
