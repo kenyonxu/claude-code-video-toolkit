@@ -9,6 +9,7 @@ without returning a traceback.
 from __future__ import annotations
 
 import logging
+import shutil
 from collections.abc import Callable
 from pathlib import Path
 
@@ -19,15 +20,25 @@ from .config import GatewaySettings
 ClientFactory = Callable[[str], ComfyUIClient]
 logger = logging.getLogger(__name__)
 
-_MODEL_SKELETON = {
-    "ready": False,
-    "files_ready": False,
-    "nodes_ready": False,
-    "optional_files_present": [],
-    "missing_files": [],
-    "missing_nodes": [],
-    "missing_loader_values": [],
-}
+
+def _model_skeleton() -> dict:
+    """Fresh skeleton per model: every list is a new object, so one model's
+    fallback can never mutate another's (no shared shallow-copied lists)."""
+    return {
+        "ready": False,
+        "files_ready": False,
+        "nodes_ready": False,
+        "optional_files_present": [],
+        "missing_files": [],
+        "missing_nodes": [],
+        "missing_loader_values": [],
+    }
+
+
+def _tool_dependencies() -> dict:
+    """ffmpeg/ffprobe availability in this gateway process's PATH."""
+    return {"ffmpeg": shutil.which("ffmpeg") is not None,
+            "ffprobe": shutil.which("ffprobe") is not None}
 
 
 def _err(code: str, scope: str, message: str, action: str) -> dict:
@@ -143,8 +154,9 @@ def build_health_payload(settings: GatewaySettings,
                 "gpu": None,
                 "ram": None,
             },
-            "models": {entry.key: dict(_MODEL_SKELETON)
+            "models": {entry.key: _model_skeleton()
                        for entry in registry.MODEL_ENTRIES},
+            "dependencies": _tool_dependencies(),
             "routes": {
                 route: {"implemented": route in registry.IMPLEMENTED_ROUTES,
                         "available": False}
@@ -163,6 +175,17 @@ def build_health_payload(settings: GatewaySettings,
 def _build(settings: GatewaySettings,
            client_factory: ClientFactory) -> tuple[dict, int]:
     errors = [_err(e.code, "config", e.message, e.action) for e in settings.errors]
+
+    dependencies = _tool_dependencies()
+    for tool, present in dependencies.items():
+        if not present:
+            errors.append(_err(
+                "dependency_missing", "gateway",
+                f"{tool} is not available on this gateway process's PATH.",
+                f"Install {tool} (ffmpeg/ffprobe ship together) and restart"
+                f" the gateway; voice clone requires it for probing and WAV"
+                f" transcode.",
+            ))
 
     comfyui = {
         "base_url": settings.base_url,
@@ -245,21 +268,25 @@ def _build(settings: GatewaySettings,
         }
 
     models_ready = all(m["ready"] for m in models.values())
+    dependencies_ready = all(dependencies.values())
     routes = {
         route: {
             "implemented": route in registry.IMPLEMENTED_ROUTES,
             "available": (route in registry.IMPLEMENTED_ROUTES
-                          and models[registry.ROUTE_TARGETS[route]]["ready"]),
+                          and models[registry.ROUTE_TARGETS[route]]["ready"]
+                          and dependencies_ready),
         }
         for route in registry.ROUTE_TARGETS
     }
-    ready = settings.config_valid and comfyui["reachable"] and models_ready
+    ready = (settings.config_valid and comfyui["reachable"]
+             and models_ready and dependencies_ready)
 
     payload = {
         "ready": ready,
         "models_ready": models_ready,
         "comfyui": comfyui,
         "models": models,
+        "dependencies": dependencies,
         "routes": routes,
         "errors": errors,
     }

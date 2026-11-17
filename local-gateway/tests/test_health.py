@@ -105,6 +105,8 @@ class RegistryTests(unittest.TestCase):
             "image_edit": "qwen-image-2.1",
             "video": "minimax-h3-fl2va",
         })
+        # Task 9 (real acceptance) flips this to frozenset({"tts"}) and
+        # updates this assertion in the same commit.
         self.assertEqual(registry.IMPLEMENTED_ROUTES, frozenset())
 
     def test_required_nodes_is_unique_across_entries(self):
@@ -254,6 +256,11 @@ class FakeClient:
 
 
 class HealthAggregationTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch("shutil.which", return_value="/fake/bin/tool")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def settings_for(self, root, base_url=None):
         env = {"COMFYUI_MODELS_ROOT": str(root)}
         if base_url is not None:
@@ -515,8 +522,78 @@ class HealthAggregationTests(unittest.TestCase):
         self.assertNotIn("Start ComfyUI", error["action"])
         self.assertIn("timeout", error["message"].lower())
 
+    def test_dependencies_block_reports_both_tools(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_model_tree(root, optional_audio_vae=True)
+            client = FakeClient(object_info=object_info_fixture())
+            with mock.patch("shutil.which", return_value="/fake/bin/ffmpeg"):
+                payload, status = health.build_health_payload(
+                    self.settings_for(root), lambda url: client)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["dependencies"],
+                         {"ffmpeg": True, "ffprobe": True})
+        self.assertTrue(payload["ready"])
+
+    def test_missing_ffprobe_is_dependency_missing_and_blocks_ready(self):
+        def fake_which(name):
+            return "/fake/bin/ffmpeg" if name == "ffmpeg" else None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_model_tree(root, optional_audio_vae=True)
+            client = FakeClient(object_info=object_info_fixture())
+            with mock.patch("shutil.which", side_effect=fake_which):
+                payload, status = health.build_health_payload(
+                    self.settings_for(root), lambda url: client)
+        self.assertEqual(status, 503)
+        self.assertFalse(payload["ready"])
+        self.assertEqual(payload["dependencies"],
+                         {"ffmpeg": True, "ffprobe": False})
+        self.assertTrue(payload["models_ready"])  # models describe weights only
+        codes = [e["code"] for e in payload["errors"]]
+        self.assertIn("dependency_missing", codes)
+        action = next(e for e in payload["errors"]
+                      if e["code"] == "dependency_missing")["action"]
+        self.assertIn("ffprobe", action)
+        self.assertTrue(all(not r["available"] for r in payload["routes"].values()))
+
+    def test_fallback_skeleton_lists_are_independent_per_model(self):
+        def boom(url):
+            raise ZeroDivisionError("division by zero")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_model_tree(root)
+            payload, _ = health.build_health_payload(self.settings_for(root), boom)
+        models = list(payload["models"].values())
+        self.assertGreaterEqual(len(models), 2)
+        first, second = models[0], models[1]
+        self.assertIsNot(first["missing_files"], second["missing_files"])
+        first["missing_files"].append("leak")
+        self.assertEqual(second["missing_files"], [])
+        self.assertIn("dependencies", payload)
+
+    def test_object_info_is_fetched_once_per_node(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_model_tree(root)
+            client = FakeClient(object_info=object_info_fixture())
+            health.build_health_payload(self.settings_for(root),
+                                        lambda url: client)
+        self.assertTrue(client.object_info_calls)
+        self.assertEqual(len(client.object_info_calls),
+                         len(set(client.object_info_calls)))
+        self.assertEqual(set(client.object_info_calls),
+                         set(registry.required_nodes()))
+
 
 class ServerTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch("shutil.which", return_value="/fake/bin/tool")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def make_app(self, root, client):
         settings = config.load_settings(env={"COMFYUI_MODELS_ROOT": str(root)})
         return server.create_app(settings=settings, client_factory=lambda url: client)
