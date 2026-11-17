@@ -51,8 +51,9 @@ Read `errors[].action` in the response body and follow it. The gateway
 returns HTTP 503 with the full check results while anything is missing, and
 200 once the infrastructure and the first-release models are in place.
 `ready` never means the generation routes work: check each route's
-`implemented` flag. The four routes stay `implemented: false` until their
-real generation acceptance passes in later phases.
+`implemented` flag. The `tts` route is `implemented: true` after the P2 real
+clone acceptance; the image and video routes stay `implemented: false` until
+their own phases.
 
 ## TTS voice clone
 

@@ -150,9 +150,10 @@ ROUTE_TARGETS: dict[str, str] = {
     "video": "minimax-h3-fl2va",
 }
 
-# Routes whose POST endpoint actually works. P1 implements none of them; a
-# later phase flips a route only after its real generation acceptance passes.
-IMPLEMENTED_ROUTES: frozenset[str] = frozenset()
+# Routes whose POST endpoint actually works. tts flipped after the three real
+# clone generations, health and full regression of the P2 acceptance passed;
+# image and video stay false until their own phases.
+IMPLEMENTED_ROUTES: frozenset[str] = frozenset({"tts"})
 
 
 def required_nodes() -> tuple[str, ...]:

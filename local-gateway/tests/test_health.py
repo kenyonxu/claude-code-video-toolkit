@@ -105,9 +105,8 @@ class RegistryTests(unittest.TestCase):
             "image_edit": "qwen-image-2.1",
             "video": "minimax-h3-fl2va",
         })
-        # Task 9 (real acceptance) flips this to frozenset({"tts"}) and
-        # updates this assertion in the same commit.
-        self.assertEqual(registry.IMPLEMENTED_ROUTES, frozenset())
+        # Flipped to tts only after the real P2 clone acceptance (Task 9).
+        self.assertEqual(registry.IMPLEMENTED_ROUTES, frozenset({"tts"}))
 
     def test_required_nodes_is_unique_across_entries(self):
         nodes = registry.required_nodes()
@@ -293,7 +292,7 @@ class HealthAggregationTests(unittest.TestCase):
         self.assertEqual(payload["models"]["qwen-image-2.1"]["optional_files_present"], [])
         self.assertEqual(payload["errors"], [])
         self.assertEqual(payload["routes"], {
-            "tts": {"implemented": False, "available": False},
+            "tts": {"implemented": True, "available": True},
             "image_generate": {"implemented": False, "available": False},
             "image_edit": {"implemented": False, "available": False},
             "video": {"implemented": False, "available": False},
@@ -611,8 +610,10 @@ class ServerTests(unittest.TestCase):
         self.assertIs(body["models_ready"], True)
         self.assertEqual(set(body["routes"]),
                          {"tts", "image_generate", "image_edit", "video"})
-        self.assertTrue(all(not r["implemented"] and not r["available"]
-                            for r in body["routes"].values()))
+        self.assertTrue(body["routes"]["tts"]["implemented"]
+                        and body["routes"]["tts"]["available"])
+        self.assertTrue(all(not body["routes"][name]["implemented"]
+                            for name in ("image_generate", "image_edit", "video")))
         self.assertEqual(body["errors"], [])
 
     def test_health_503_with_structured_errors_when_model_missing(self):

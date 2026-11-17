@@ -89,13 +89,13 @@ curl --noproxy '*' --fail-with-body http://127.0.0.1:8123/health
 
 依据 2026-11-17 clone-only 设计规格（docs/superpowers/specs/2026-11-17-local-comfyui-p2-design.md）执行，CustomVoice 与 VoiceDesign 移出本期。
 
-- [ ] **开工第一步**：用 `/object_info` 校验 `AILab_Qwen3TTSVoiceClone_Advanced`、`LoadAudio`、`SaveAudioAdvanced` 及真实参数。校验不过，不写路由。
-- [ ] `POST /tts/generate`：仅 `mode=clone`；注册表首条目 `qwen3-tts-1.7B`，固定 `model_size=1.7B`，`modes=(clone,)`，`output_formats=(mp3, wav)`。非 clone 返回 422 `mode_unsupported`；`ref_audio_url`/`r2` 返回 422 `external_url_unsupported`。
-- [ ] 模板原创生成，不复制第三方 example workflow JSON。MP3 由 ComfyUI 直接输出（`format="mp3"` + `format.quality="V0"`）；WAV 由 FLAC 中间文件用 FFmpeg `pcm_s16le` 真实转码，不改扩展名伪装格式。
-- [ ] clone：`ref_audio_base64` 上传至 ComfyUI input，再由 `LoadAudio` 提供 AUDIO；每请求上传一次，批量逐项有序执行，任一失败无部分结果；deadline 为 `270 * max(1, item_count // 3 + 1)`，覆盖 lock、上传、submit/poll/view/ffprobe/FFmpeg；单进程 lock 串行化。
-- [ ] `tools/qwen3_tts.py`：`--cloud` 加 local，新增自由字符串 `--model` 并传入 payload。**local clone 直接编码参考音频，跳过 `upload_to_storage()` 和结果 R2 上传**；云路径保持原行为；`--setup --cloud local` 退出码 2。
-- [ ] `tools/voiceover.py`：`--cloud` 加 local，新增 `--qwen-model` 透传 Qwen 变体，新增默认 300 的 `--timeout`；local 所有 clone 路径必须 `--ref-audio`+`--ref-text`；brand VoiceDesign 与内置 speaker 在 local 下拒绝。现有 `--model` 是 ElevenLabs 专用，不复用。
-- [ ] 单测：模板补丁、output format、model/timeout 透传、local clone base64 分支、外部上传下载函数零调用、网关错误契约、health dependencies 与 fallback 工厂。全部 fake 网络。
+- [x] **开工第一步**：用 `/object_info` 校验 `AILab_Qwen3TTSVoiceClone_Advanced`、`LoadAudio`、`SaveAudioAdvanced` 及真实参数。校验不过，不写路由。
+- [x] `POST /tts/generate`：仅 `mode=clone`；注册表首条目 `qwen3-tts-1.7B`，固定 `model_size=1.7B`，`modes=(clone,)`，`output_formats=(mp3, wav)`。非 clone 返回 422 `mode_unsupported`；`ref_audio_url`/`r2` 返回 422 `external_url_unsupported`。
+- [x] 模板原创生成，不复制第三方 example workflow JSON。MP3 由 ComfyUI 直接输出（`format="mp3"` + `format.quality="V0"`）；WAV 由 FLAC 中间文件用 FFmpeg `pcm_s16le` 真实转码，不改扩展名伪装格式。
+- [x] clone：`ref_audio_base64` 上传至 ComfyUI input，再由 `LoadAudio` 提供 AUDIO；每请求上传一次，批量逐项有序执行，任一失败无部分结果；deadline 为 `270 * max(1, item_count // 3 + 1)`，覆盖 lock、上传、submit/poll/view/ffprobe/FFmpeg；单进程 lock 串行化。
+- [x] `tools/qwen3_tts.py`：`--cloud` 加 local，新增自由字符串 `--model` 并传入 payload。**local clone 直接编码参考音频，跳过 `upload_to_storage()` 和结果 R2 上传**；云路径保持原行为；`--setup --cloud local` 退出码 2。
+- [x] `tools/voiceover.py`：`--cloud` 加 local，新增 `--qwen-model` 透传 Qwen 变体，新增默认 300 的 `--timeout`；local 所有 clone 路径必须 `--ref-audio`+`--ref-text`；brand VoiceDesign 与内置 speaker 在 local 下拒绝。现有 `--model` 是 ElevenLabs 专用，不复用。
+- [x] 单测：模板补丁、output format、model/timeout 透传、local clone base64 分支、外部上传下载函数零调用、网关错误契约、health dependencies 与 fallback 工厂。全部 fake 网络。
 
 验收（三项真实 clone 生成，素材见规格第 14 节）：
 
@@ -247,9 +247,8 @@ done
 
 | 差异点 | ccvt 公共契约 | ComfyUI/H3 实际处理 |
 |---|---|---|
-| TTS custom_voice | `text/speaker/language/instruct/mode` | AILab 节点参数近似 1:1，另固定 `model_size=1.7B`，mode 用于选节点 |
+| TTS 模式 | 仅 `mode=clone`（VoiceClone 单模式） | P2 收敛为 clone 单模式；custom_voice 与 voice_design 不属于本地能力，一律 422 `mode_unsupported`，不进入 workflow |
 | TTS clone | `text` + `ref_audio_base64` + `ref_text` | `text` 补丁到 `target_text`；上传 input 后由 `LoadAudio` 输出 AUDIO，接 `reference_audio` 与 `reference_text`；默认 `x_vector_only=false` |
-| TTS voice_design | `text` + `instruct` | 运行时只接受 `model_size=1.7B`，0.6B 变体不得开放此能力 |
 | TTS 格式 | `output_format=mp3|wav` | `SaveAudioAdvanced` 支持 flac/mp3/opus；wav 由网关明确转码，不改名伪装 |
 | 图像分辨率 | `width` + `height` | 只补丁 latent/canvas；`TextEncodeQwenImage21.resolution` 独立控制参考图缩放，默认 1024，不是输出宽高别名 |
 | CLIP 类型 | 注册表模型条目 | Qwen Image 用 `CLIPLoader.type=qwen_image`，H3 用 `minimax`，不从文件名猜测 |
@@ -258,7 +257,7 @@ done
 | H3 尺寸 | `width` + `height` | 32 倍数，默认节点为 1344x768，不继承 LTX2 约束 |
 | quality/steps | `quality`、可选 `num_inference_steps` | quality 选注册表推荐步数，显式 steps 覆盖默认值，响应返回实际步数 |
 
-H3 网格、24 fps 与 `CLIPLoader.type` 已于 2026-11-17 通过本机源码和 `/object_info` 复核；TTS 三模式、`target_text`、保存节点、Qwen resolution 语义及 loader 权重清单也已通过运行时元数据复核。附录 B 文件与 TTS 目录均在文件系统逐项确认。仍未运行真实生成。
+H3 网格、24 fps 与 `CLIPLoader.type` 已于 2026-11-17 通过本机源码和 `/object_info` 复核；TTS VoiceClone 单模式、`target_text`、保存节点、Qwen resolution 语义及 loader 权重清单也已通过运行时元数据复核。附录 B 文件与 TTS 目录均在文件系统逐项确认。TTS 三项真实 clone 生成已于 2026-11-18 通过（见 P2 验收）；图像与视频仍未运行真实生成。
 
 ## 附录 B：`/health` 模型检查清单
 
