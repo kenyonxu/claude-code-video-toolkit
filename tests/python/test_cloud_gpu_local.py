@@ -270,15 +270,17 @@ class LocalTransportTests(unittest.TestCase):
         self.assertIn("x" * 500, result["error"])
         self.assertNotIn("x" * 501, result["error"])
 
-    def test_non_json_response_returns_error(self):
+    def test_non_json_response_error_mentions_body_kind_and_content(self):
         body = FakeResponse(status_code=200, text="<html>oops</html>", json_error=True)
         result, _ = run_local(FakeSession(response=body), self.url)
-        self.assertIn("error", result)
+        self.assertIn("non-JSON body", result["error"])
+        self.assertIn("<html>oops</html>", result["error"])
 
-    def test_non_dict_json_returns_error(self):
+    def test_non_dict_json_error_mentions_body_kind_and_content(self):
         body = FakeResponse(status_code=200, json_data=[1, 2, 3], text="[1, 2, 3]")
         result, _ = run_local(FakeSession(response=body), self.url)
-        self.assertIn("error", result)
+        self.assertIn("not an object", result["error"])
+        self.assertIn("[1, 2, 3]", result["error"])
 
     def test_application_error_emits_error_event_and_no_complete(self):
         body = FakeResponse(status_code=200, json_data={"error": "comfyui node failed"})

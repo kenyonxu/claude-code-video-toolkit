@@ -3,10 +3,10 @@
 Generate speech using Qwen3-TTS (via cloud GPU).
 
 Supports built-in speakers with emotion control and voice cloning from reference audio.
-Cloud providers: RunPod (default), Modal.
+Cloud providers: Modal (default), RunPod, or the local gateway (--cloud local; voice clone only).
 
 Usage:
-    # Built-in speaker (RunPod, default)
+    # Built-in speaker (Modal, default)
     uv run tools/qwen3_tts.py --text "Hello world" --speaker Ryan --output hello.mp3
 
     # Using Modal instead of RunPod
@@ -743,8 +743,11 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Built-in speaker (RunPod, default)
+  # Built-in speaker (Modal, default)
   uv run tools/qwen3_tts.py --text "Hello world" --speaker Ryan --output hello.mp3
+
+  # Local gateway voice clone (requires local ComfyUI + gateway)
+  uv run tools/qwen3_tts.py --cloud local --text "Hello" --ref-audio ref.mp3 --ref-text "transcript" --output cloned.mp3
 
   # Using Modal instead
   uv run tools/qwen3_tts.py --text "Hello world" --cloud modal --output hello.mp3
@@ -864,8 +867,8 @@ Examples:
         "--cloud",
         type=str,
         default="modal",
-        choices=["runpod", "modal"],
-        help="Cloud GPU provider (default: modal)",
+        choices=["runpod", "modal", "local"],
+        help="Cloud GPU provider (default: modal; local = loopback gateway, voice clone only)",
     )
     parser.add_argument(
         "--timeout",
@@ -961,6 +964,16 @@ def main():
 
     # Handle --setup
     if args.setup:
+        if args.cloud == "local":
+            print(
+                "Setup: --cloud local needs no endpoint setup.\n"
+                "  1. Start ComfyUI on 127.0.0.1:9188\n"
+                "  2. Copy local-gateway/.env.example to local-gateway/.env and set COMFYUI_MODELS_ROOT\n"
+                "  3. Run local-gateway/start_gateway.bat (binds 127.0.0.1:8123)\n"
+                "  4. Set LOCAL_TTS_ENDPOINT_URL=http://127.0.0.1:8123/tts/generate in .env",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         if args.cloud == "modal":
             result = setup_modal(verbose=verbose)
         else:
