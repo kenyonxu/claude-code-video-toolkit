@@ -20,6 +20,12 @@ from local_gateway.comfyui import ComfyUIError  # noqa: E402
 from local_gateway import registry  # noqa: E402
 from local_gateway.registry import RequiredOption  # noqa: E402
 
+from unittest import mock  # noqa: E402
+
+from local_gateway import server  # noqa: E402
+
+from fastapi.testclient import TestClient  # noqa: E402
+
 
 class RegistryTests(unittest.TestCase):
     def test_three_first_release_models_with_capabilities(self):
@@ -460,6 +466,59 @@ class HealthAggregationTests(unittest.TestCase):
         self.assertEqual(set(payload["models"]),
                          {"qwen3-tts-1.7B", "qwen-image-2.1", "minimax-h3-fl2va"})
         self.assertTrue(all(not r["available"] for r in payload["routes"].values()))
+
+
+class ServerTests(unittest.TestCase):
+    def make_app(self, root, client):
+        settings = config.load_settings(env={"COMFYUI_MODELS_ROOT": str(root)})
+        return server.create_app(settings=settings, client_factory=lambda url: client)
+
+    def test_health_200_when_ready(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_model_tree(root)
+            client = FakeClient(object_info=object_info_fixture())
+            with TestClient(self.make_app(root, client)) as tc:
+                response = tc.get("/health")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertIs(body["ready"], True)
+        self.assertIs(body["models_ready"], True)
+        self.assertEqual(set(body["routes"]),
+                         {"tts", "image_generate", "image_edit", "video"})
+        self.assertTrue(all(not r["implemented"] and not r["available"]
+                            for r in body["routes"].values()))
+        self.assertEqual(body["errors"], [])
+
+    def test_health_503_with_structured_errors_when_model_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_model_tree(root, include=("tts", "image"))
+            client = FakeClient(object_info=object_info_fixture())
+            with TestClient(self.make_app(root, client)) as tc:
+                response = tc.get("/health")
+        self.assertEqual(response.status_code, 503)
+        body = response.json()
+        self.assertIs(body["ready"], False)
+        self.assertNotEqual(body["errors"], [])
+        for error in body["errors"]:
+            self.assertEqual(set(error), {"code", "scope", "message", "action"})
+
+    def test_creating_the_app_makes_no_network_request_and_does_not_read_real_env(self):
+        def never(url):
+            raise AssertionError("create_app must not contact ComfyUI")
+
+        with mock.patch.object(server, "load_settings") as load:
+            app = server.create_app(client_factory=never)
+        load.assert_not_called()
+        self.assertTrue(app.title)
+
+    def test_default_client_factory_builds_a_real_client(self):
+        client = server.default_client_factory("http://127.0.0.1:9188")
+        try:
+            self.assertEqual(client.base_url, "http://127.0.0.1:9188")
+        finally:
+            client.close()
 
 
 if __name__ == "__main__":
