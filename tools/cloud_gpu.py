@@ -1,12 +1,13 @@
 """Shared cloud GPU provider abstraction.
 
-Routes job submission to RunPod or Modal endpoints with a unified interface.
+Routes job submission to RunPod, Modal or local endpoints with a unified interface.
 Each tool builds its own payload dict, then calls call_cloud_endpoint() which
 handles submission, polling, timeout, and cancellation for the chosen provider.
 
 Supported providers:
 - runpod: RunPod serverless endpoints (existing)
-- modal: Modal web endpoints (new)
+- modal: Modal web endpoints (existing)
+- local: loopback local-gateway endpoints backed by local ComfyUI (new)
 """
 from __future__ import annotations
 
@@ -46,6 +47,13 @@ _MODAL_ENV_VARS = {
     "dewatermark": "MODAL_DEWATERMARK_ENDPOINT_URL",
     "ltx2": "MODAL_LTX2_ENDPOINT_URL",
     "soulx": "MODAL_SOULX_ENDPOINT_URL",
+}
+
+_LOCAL_ENV_VARS = {
+    "qwen3_tts": "LOCAL_TTS_ENDPOINT_URL",
+    "qwen_image": "LOCAL_IMAGE_ENDPOINT_URL",
+    "image_edit": "LOCAL_IMAGE_EDIT_ENDPOINT_URL",
+    "h3_video": "LOCAL_VIDEO_ENDPOINT_URL",
 }
 
 
@@ -233,6 +241,10 @@ def get_provider_config(provider: str, tool_name: str) -> dict:
     Returns dict with provider-specific keys:
     - RunPod: {"api_key": str, "endpoint_id": str}
     - Modal: {"endpoint_url": str, "token_id": str, "token_secret": str}
+    - Local: {"endpoint_url": str | None}. The URL comes from the tool's
+      LOCAL_*_ENDPOINT_URL env var; None means the var is unset or the tool
+      is not registered for local, which _call_local turns into an
+      actionable error dict.
     """
     if provider == "runpod":
         env_var = _RUNPOD_ENV_VARS.get(tool_name)
@@ -247,8 +259,13 @@ def get_provider_config(provider: str, tool_name: str) -> dict:
             "token_id": os.getenv("MODAL_TOKEN_ID"),
             "token_secret": os.getenv("MODAL_TOKEN_SECRET"),
         }
+    elif provider == "local":
+        env_var = _LOCAL_ENV_VARS.get(tool_name)
+        return {
+            "endpoint_url": os.getenv(env_var) if env_var else None,
+        }
     else:
-        raise ValueError(f"Unknown provider: {provider}. Use 'runpod' or 'modal'.")
+        raise ValueError(f"Unknown provider: {provider}. Use 'runpod', 'modal' or 'local'.")
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +286,8 @@ def call_cloud_endpoint(
     """Submit a job to a cloud GPU endpoint and wait for the result.
 
     Args:
-        provider: "runpod" or "modal"
+        provider: "runpod", "modal" or "local" (local posts once to the
+                   tool's LOCAL_* endpoint on the loopback gateway)
         payload: The job payload ({"input": {...}} for RunPod, raw dict for Modal)
         tool_name: Config lookup key (e.g., "qwen3_tts", "flux2")
         timeout: Overall timeout in seconds
@@ -313,7 +331,7 @@ def call_cloud_endpoint(
         )
 
     else:
-        raise ValueError(f"Unknown provider: {provider}")
+        raise ValueError(f"Unknown provider: {provider}. Use 'runpod', 'modal' or 'local'.")
 
     # Print cost estimate
     if progress and elapsed > 0 and not result.get("error"):
