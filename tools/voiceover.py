@@ -113,6 +113,31 @@ def resolve_model_id(model_id: str) -> str:
     return sent
 
 
+def local_clone_error(provider: str, cloud: str, ref_audio, ref_text,
+                      brand_design: bool = False) -> str | None:
+    """CLI error message when a qwen3 local call is not clone-only, else None.
+
+    The local gateway implements voice clone only (P2): built-in speakers
+    and voice design stay cloud features. ElevenLabs and cloud qwen3 are
+    never affected.
+    """
+    if provider != "qwen3" or cloud != "local":
+        return None
+    if brand_design:
+        return (
+            "--cloud local supports voice clone only; brand clone.design"
+            " (VoiceDesign) is not available on the local gateway. Provide"
+            " --ref-audio/--ref-text, or drop --cloud local for this voice."
+        )
+    if not ref_audio or not ref_text:
+        return (
+            "--cloud local supports voice clone only: --ref-audio and"
+            " --ref-text are both required (built-in speakers and voice"
+            " design are cloud-only)."
+        )
+    return None
+
+
 def _get_elevenlabs_imports():
     """Lazy import ElevenLabs SDK (only when provider=elevenlabs)."""
     try:
@@ -293,14 +318,30 @@ Examples:
         type=float,
         help="Qwen3-TTS nucleus sampling (default: model default ~0.8, range: 0.1-1.0)",
     )
+    parser.add_argument(
+        "--qwen-model",
+        type=str,
+        default=None,
+        help="Qwen3-TTS model name passed through on every qwen3 path"
+             " (e.g. qwen3-tts-1.7B). The gateway validates it; default"
+             " omits the field.",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=300,
+        help="Qwen3-TTS per-job timeout in seconds; batches scale it by"
+             " count, matching the gateway (default: 300)",
+    )
 
     # Cloud GPU provider (for Qwen3-TTS)
     parser.add_argument(
         "--cloud",
         type=str,
         default="modal",
-        choices=["runpod", "modal"],
-        help="Cloud GPU provider for Qwen3-TTS (default: modal)",
+        choices=["runpod", "modal", "local"],
+        help="Cloud GPU provider for Qwen3-TTS (default: modal; local ="
+             " loopback gateway, voice clone only)",
     )
 
     # Brand integration
@@ -689,9 +730,15 @@ def generate_single_audio_qwen3(
     top_p: float | None = None,
     cloud: str = "runpod",
     max_wpm: float | None = None,
+    model: str | None = None,
+    timeout: int = 300,
     progress=None,
 ) -> dict:
     """Generate a single audio file from script text using Qwen3-TTS. Returns result dict."""
+    error = local_clone_error("qwen3", cloud, ref_audio, ref_text)
+    if error:
+        return {"success": False, "error": error}
+
     from qwen3_tts import generate_audio
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -708,6 +755,8 @@ def generate_single_audio_qwen3(
         temperature=temperature,
         top_p=top_p,
         cloud=cloud,
+        model=model,
+        timeout=timeout,
         max_wpm=max_wpm,
         progress=progress,
     )
@@ -723,8 +772,9 @@ def generate_batch_audio_qwen3(
     temperature: float | None = None,
     top_p: float | None = None,
     cloud: str = "runpod",
-    timeout_per_scene: int = 120,
     max_wpm: float | None = None,
+    model: str | None = None,
+    timeout: int = 300,
     progress=None,
 ) -> list[dict]:
     """Generate multiple audio files in a single Qwen3-TTS call.
@@ -735,6 +785,10 @@ def generate_batch_audio_qwen3(
 
     Returns a list of result dicts matching the input order.
     """
+    error = local_clone_error("qwen3", cloud, ref_audio, ref_text)
+    if error:
+        return [{"success": False, "error": error}]
+
     from qwen3_tts import generate_audio
 
     for p in output_paths:
@@ -751,7 +805,8 @@ def generate_batch_audio_qwen3(
         temperature=temperature,
         top_p=top_p,
         cloud=cloud,
-        timeout=timeout_per_scene,
+        model=model,
+        timeout=timeout,
         max_wpm=max_wpm,
         progress=progress,
     )
@@ -761,9 +816,12 @@ def generate_batch_audio_qwen3(
         err = result.get("error", "batch generation failed")
         return [{"success": False, "error": err, "output": str(p)} for p in output_paths]
 
+    # One success per scene, in input order; the gateway returns `outputs`
+    # on every success, so the fallback only covers minimal result dicts.
+    outputs = result.get("outputs") or [{"output": str(p)} for p in output_paths]
     return [
         {"success": True, **item}
-        for item in result.get("outputs", [])
+        for item in outputs
     ]
 
 
@@ -795,9 +853,15 @@ def process_scene_directory(
     top_p: float | None = None,
     cloud: str = "runpod",
     max_wpm: float | None = None,
+    qwen_model: str | None = None,
+    timeout: int = 300,
     progress=None,
 ) -> list[dict]:
     """Process all .txt files in directory, generate .mp3 for each."""
+    error = local_clone_error("qwen3", cloud, ref_audio, ref_text)
+    if error:
+        return [{"success": False, "error": error}], 0.0, 0
+
     txt_files = sorted(scene_dir.glob("*.txt"))
 
     if not txt_files:
@@ -885,6 +949,8 @@ def process_scene_directory(
             top_p=top_p,
             cloud=cloud,
             max_wpm=max_wpm,
+            model=qwen_model,
+            timeout=timeout,
             progress=progress,
         )
 
@@ -919,6 +985,8 @@ def process_scene_directory(
                 top_p=top_p,
                 cloud=cloud,
                 max_wpm=max_wpm,
+                model=qwen_model,
+                timeout=timeout,
                 progress=progress,
             )
         elif provider == "60db":
@@ -1081,6 +1149,13 @@ def main():
                 if "design" in clone_cfg:
                     # VoiceDesign mode — design a character voice from a brief,
                     # cache it, and use that cached wav as the clone reference.
+                    # The local gateway is clone-only (P2): refuse instead of
+                    # silently generating a cloud reference.
+                    design_guard = local_clone_error(
+                        provider, args.cloud, None, None, brand_design=True)
+                    if design_guard:
+                        print(f"Error: {design_guard}", file=sys.stderr)
+                        sys.exit(1)
                     design = clone_cfg["design"]
                     if "seedText" not in design or "instruct" not in design:
                         print("Error: clone.design requires both 'seedText' and 'instruct'", file=sys.stderr)
@@ -1183,6 +1258,15 @@ def main():
         )
         args.instruct = ""
 
+    # Local gateway is clone-only (P2): every qwen3 local path (single,
+    # scene-dir, batch, brand) must carry a reference voice.
+    if provider == "qwen3":
+        guard = local_clone_error(provider, args.cloud, args.ref_audio,
+                                  args.ref_text)
+        if guard:
+            print(f"Error: {guard}", file=sys.stderr)
+            sys.exit(1)
+
     # Provider-specific setup
     client = None
     voice_id = None
@@ -1282,6 +1366,8 @@ def main():
                 temperature=args.temperature,
                 top_p=args.top_p,
                 cloud=args.cloud,
+                qwen_model=args.qwen_model,
+                timeout=args.timeout,
             )
             result = {
                 "dry_run": True,
@@ -1348,6 +1434,8 @@ def main():
             temperature=args.temperature,
             top_p=args.top_p,
             cloud=args.cloud,
+            qwen_model=args.qwen_model,
+            timeout=args.timeout,
             max_wpm=args.max_wpm,
             progress=_progress_reporter(args),
         )
@@ -1468,6 +1556,8 @@ def main():
             temperature=args.temperature,
             top_p=args.top_p,
             cloud=args.cloud,
+            model=args.qwen_model,
+            timeout=args.timeout,
             max_wpm=args.max_wpm,
             progress=_progress_reporter(args),
         )
