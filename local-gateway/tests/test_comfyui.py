@@ -7,6 +7,7 @@ Fakes only: no request leaves this process.
 from __future__ import annotations
 
 import sys
+import time
 import unittest
 from pathlib import Path
 
@@ -14,7 +15,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from local_gateway.comfyui import ComfyUIClient, ComfyUIError  # noqa: E402
+from local_gateway.comfyui import ComfyUIClient, ComfyUIError, ComfyUITimeout  # noqa: E402
 
 BASE = "http://127.0.0.1:9188"
 
@@ -170,6 +171,75 @@ class HttpClientTests(unittest.TestCase):
         with self.assertRaises(ComfyUIError) as ctx:
             make_client(Broken()).system_stats()
         self.assertEqual(ctx.exception.code, "comfyui_unreachable")
+
+
+def success_history(prompt_id):
+    return {prompt_id: {"status": {"completed": True, "status_str": "success"},
+                        "outputs": {}}}
+
+
+class WaitTests(unittest.TestCase):
+    def test_wait_returns_the_successful_history_entry(self):
+        s = FakeSession()
+        s.get_response = FakeResponse(json_data=success_history("p1"))
+        entry = make_client(s).wait("p1", deadline=time.monotonic() + 5,
+                                    poll_interval=0.01)
+        self.assertEqual(entry["status"]["status_str"], "success")
+
+    def test_wait_polls_until_the_prompt_appears(self):
+        s = FakeSession()
+        s.get_responses = [
+            FakeResponse(json_data={}),
+            FakeResponse(json_data={}),
+            FakeResponse(json_data=success_history("p2")),
+        ]
+        entry = make_client(s).wait("p2", deadline=time.monotonic() + 5,
+                                    poll_interval=0.01)
+        self.assertEqual(entry["status"]["status_str"], "success")
+        self.assertEqual(len(s.get_calls), 3)
+
+    def test_wait_execution_error_keeps_prompt_id_and_status(self):
+        s = FakeSession()
+        s.get_response = FakeResponse(json_data={
+            "p3": {"status": {"completed": True, "status_str": "error",
+                              "messages": ["Execution interrupted"]}},
+        })
+        with self.assertRaises(ComfyUIError) as ctx:
+            make_client(s).wait("p3", deadline=time.monotonic() + 5,
+                                poll_interval=0.01)
+        self.assertIn("p3", ctx.exception.message)
+        self.assertEqual(ctx.exception.code, "execution_error")
+        self.assertEqual(ctx.exception.details["status_str"], "error")
+
+    def test_wait_cancelled_entry_is_an_execution_error(self):
+        s = FakeSession()
+        s.get_response = FakeResponse(json_data={
+            "p4": {"status": {"completed": False, "status_str": "cancelled"}},
+        })
+        with self.assertRaises(ComfyUIError) as ctx:
+            make_client(s).wait("p4", deadline=time.monotonic() + 5,
+                                poll_interval=0.01)
+        self.assertEqual(ctx.exception.code, "execution_error")
+
+    def test_wait_rejects_nonpositive_poll_interval(self):
+        with self.assertRaises(ValueError):
+            make_client(FakeSession()).wait("p1", deadline=time.monotonic() + 5,
+                                            poll_interval=0)
+
+    def test_wait_rejects_deadline_in_the_past(self):
+        with self.assertRaises(ValueError):
+            make_client(FakeSession()).wait("p1", deadline=time.monotonic() - 1,
+                                            poll_interval=0.01)
+
+    def test_wait_timeout_raises_comfyui_timeout_with_prompt_id(self):
+        s = FakeSession()
+        s.get_response = FakeResponse(json_data={})  # prompt never appears
+        with self.assertRaises(ComfyUITimeout) as ctx:
+            make_client(s).wait("p9", deadline=time.monotonic() + 0.05,
+                                poll_interval=0.01)
+        self.assertEqual(ctx.exception.prompt_id, "p9")
+        self.assertIn("p9", ctx.exception.message)
+        self.assertTrue(issubclass(ComfyUITimeout, ComfyUIError))
 
 
 if __name__ == "__main__":

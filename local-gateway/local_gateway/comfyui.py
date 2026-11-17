@@ -26,6 +26,19 @@ class ComfyUIError(Exception):
         self.details = details
 
 
+class ComfyUITimeout(ComfyUIError):
+    """wait() passed its deadline; the ComfyUI job was NOT cancelled."""
+
+    def __init__(self, prompt_id: str, deadline: float):
+        super().__init__(
+            f"Timed out waiting for ComfyUI prompt {prompt_id}: monotonic deadline"
+            f" {deadline:.1f} reached. The ComfyUI job keeps running; this client"
+            f" never calls /interrupt.",
+            code="comfyui_timeout",
+        )
+        self.prompt_id = prompt_id
+
+
 class ComfyUIClient:
     """Small typed wrapper over the ComfyUI HTTP API."""
 
@@ -151,3 +164,37 @@ class ComfyUIClient:
             files={"image": (filename, content, content_type)},
             data={"type": "input", "overwrite": "false"},
         )
+
+    def wait(self, prompt_id: str, deadline: float, poll_interval: float = 1.0) -> dict:
+        """Poll history until the prompt finishes, fails, or the deadline passes.
+
+        `deadline` is an absolute time.monotonic() timestamp. Individual poll
+        timeouts are not a total deadline, and this method never calls
+        /interrupt: a ComfyUITimeout leaves the backend job running.
+        """
+        if poll_interval <= 0:
+            raise ValueError(f"poll_interval must be > 0, got {poll_interval}")
+        if deadline <= time.monotonic():
+            raise ValueError(
+                f"deadline must be in the future of time.monotonic(), got {deadline}"
+            )
+        while True:
+            data = self.history(prompt_id)
+            entry = data.get(prompt_id) if isinstance(data, dict) else None
+            if isinstance(entry, dict):
+                status = entry.get("status") if isinstance(entry.get("status"), dict) else {}
+                status_str = status.get("status_str")
+                completed = bool(status.get("completed"))
+                if completed and status_str == "success":
+                    return entry
+                if completed or status_str in ("error", "cancelled"):
+                    raise ComfyUIError(
+                        f"ComfyUI execution failed for prompt {prompt_id}:"
+                        f" status_str={status_str!r}, completed={completed},"
+                        f" status={status}",
+                        code="execution_error",
+                        details=status,
+                    )
+            if time.monotonic() >= deadline:
+                raise ComfyUITimeout(prompt_id, deadline)
+            time.sleep(poll_interval)
