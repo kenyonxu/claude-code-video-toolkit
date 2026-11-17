@@ -1,0 +1,24 @@
+# ccvt local gateway: loopback FastAPI service in front of a local ComfyUI.
+#
+# Independent uv project on purpose: the root toolkit must not carry
+# FastAPI/uvicorn or any gateway dependency, and the gateway must not pull in
+# torch. Run everything through:
+#
+#   uv run --directory local-gateway python -m unittest discover -s tests -p 'test_*.py' -v
+#   uv run --directory local-gateway uvicorn local_gateway.server:app --host 127.0.0.1 --port 8123
+
+[project]
+name = "ccvt-local-gateway"
+version = "0.1.0"
+description = "Loopback FastAPI gateway in front of a local ComfyUI install"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "requests>=2.28",
+    "python-dotenv>=1.0",
+]
+
+[dependency-groups]
+# fastapi.testclient.TestClient needs httpx; the gateway runtime never does.
+dev = ["httpx>=0.27"]
