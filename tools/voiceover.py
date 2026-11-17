@@ -816,12 +816,9 @@ def generate_batch_audio_qwen3(
         err = result.get("error", "batch generation failed")
         return [{"success": False, "error": err, "output": str(p)} for p in output_paths]
 
-    # One success per scene, in input order; the gateway returns `outputs`
-    # on every success, so the fallback only covers minimal result dicts.
-    outputs = result.get("outputs") or [{"output": str(p)} for p in output_paths]
     return [
         {"success": True, **item}
-        for item in outputs
+        for item in result.get("outputs", [])
     ]
 
 

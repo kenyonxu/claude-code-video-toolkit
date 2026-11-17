@@ -52,13 +52,14 @@ class LocalCloneErrorTests(unittest.TestCase):
 
 
 class QwenPassthroughTests(unittest.TestCase):
-    def capture_generate(self):
+    def capture_generate(self, result=None):
         captured = {}
+        default = {"success": True, "output": "out.mp3",
+                   "duration_seconds": 1.5}
 
         def fake_generate(**kwargs):
             captured.update(kwargs)
-            return {"success": True, "output": "out.mp3",
-                    "duration_seconds": 1.5}
+            return result if result is not None else default
 
         return captured, mock.patch.object(qwen3_tts, "generate_audio",
                                            side_effect=fake_generate)
@@ -86,7 +87,10 @@ class QwenPassthroughTests(unittest.TestCase):
         self.assertIsNone(captured["model"])
 
     def test_batch_default_timeout_is_300_not_120(self):
-        captured, patcher = self.capture_generate()
+        captured, patcher = self.capture_generate(result={
+            "success": True,
+            "outputs": [{"output": "a.mp3"}, {"output": "b.mp3"}],
+        })
         with patcher:
             results = voiceover.generate_batch_audio_qwen3(
                 scripts=["a", "b"],
