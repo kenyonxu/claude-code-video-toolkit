@@ -56,22 +56,22 @@ uv run tools/copy_lint.py docs/local-comfyui-provider-plan.md docs/local-comfyui
 
 ### P1 链路骨架（walking skeleton）
 
-- [ ] `tools/cloud_gpu.py` 增加 `_LOCAL_ENV_VARS`，映射固定为：
+- [x] `tools/cloud_gpu.py` 增加 `_LOCAL_ENV_VARS`，映射固定为：
   - `qwen3_tts` → `LOCAL_TTS_ENDPOINT_URL`
   - `qwen_image` → `LOCAL_IMAGE_ENDPOINT_URL`
   - `image_edit` → `LOCAL_IMAGE_EDIT_ENDPOINT_URL`
   - `h3_video` → `LOCAL_VIDEO_ENDPOINT_URL`
-- [ ] `get_provider_config("local", tool_name)` 与 `call_cloud_endpoint()` 接入 `_call_local`。保持 `_call_modal` 的 `(result_dict, elapsed_seconds)` 返回形态、payload 解包和错误字典约定；缺少 URL、连接失败、HTTP/JSON 错误返回 `{"error": ...}`，未知 provider 仍抛 `ValueError`，提示包含 local。
-- [ ] `_call_local` 不使用 token，不显示 Modal 专属提示；网关不可达时提示先启动 ComfyUI 与 `start_gateway.bat`。loopback 请求不得继承 HTTP 代理；解析响应后先检查应用层 `error`，再发成功进度事件。
-- [ ] `local-gateway/` 独立 uv 子项目：`pyproject.toml`、lockfile、FastAPI/uvicorn/requests，无 torch；默认只绑定 `127.0.0.1:8123`。阻塞的 requests/poll 放在普通 `def` 端点或线程中，不得阻塞 `/health`。
-- [ ] 网关配置：`COMFYUI_BASE_URL` 默认 `http://127.0.0.1:9188`，`COMFYUI_MODELS_ROOT` 指向本机 `models/`。后者用于真实文件检查，不在代码或 tracked 配置中写死 `E:\ugit\...`。
-- [ ] 原创 ComfyUI 客户端：submit `/prompt`、poll `/history`、view `/view`、upload `/upload/image`。每次 HTTP 调用有独立短超时；长任务的总 deadline 在各路由实现。
-- [ ] 注册表先建立 P0-P5 所需模型元数据、权重清单与能力标志。路由未实现时不得标为可用。
-- [ ] `GET /health` 同时做三类检查：`/system_stats` 的 GPU/RAM、`/object_info` 的节点与 loader 可选值、`COMFYUI_MODELS_ROOT` 下的附录 B 文件。返回 `ready`、`models_ready`、逐模型状态、逐路由 `implemented` 和可执行 `errors`。`ready` 只表示当前已启用路由可服务，P1 不得把未实现的 P2-P4 路由标为可用。完全就绪返回 200，否则返回 503；TTS 不得只凭 `model_size` 枚举就宣称权重目录存在。
-- [ ] `start_gateway.bat` 与网关 README：先 ComfyUI(9188)，再网关(8123)，说明两个网关环境变量与 loopback 限制。无局域网访问需求时，ComfyUI 也应使用 `--listen 127.0.0.1`；本次运行时发现它监听 `0.0.0.0`，不得把该现状写成安全默认值。
-- [ ] 根目录本地 `.env` 写入四条 URL：TTS、IMAGE、IMAGE_EDIT、VIDEO，均指向 `http://127.0.0.1:8123` 对应能力端点。
-- [ ] CI 纳入网关：`.github/workflows/python-tests.yml` 的 push/pull_request paths 加 `local-gateway/**`；`lint-python.yml` 的 ruff 目标加 `local-gateway/`。
-- [ ] 单测：local config 的四个工具键、未知 provider、缺 URL、连接失败与 tuple 契约、应用层 error 进度语义、图像 generate/edit 键选择、ComfyUI prompt 组装和 poll 终止判定。全部 fake 网络。
+- [x] `get_provider_config("local", tool_name)` 与 `call_cloud_endpoint()` 接入 `_call_local`。保持 `_call_modal` 的 `(result_dict, elapsed_seconds)` 返回形态、payload 解包和错误字典约定；缺少 URL、连接失败、HTTP/JSON 错误返回 `{"error": ...}`，未知 provider 仍抛 `ValueError`，提示包含 local。
+- [x] `_call_local` 不使用 token，不显示 Modal 专属提示；网关不可达时提示先启动 ComfyUI 与 `start_gateway.bat`。loopback 请求不得继承 HTTP 代理；解析响应后先检查应用层 `error`，再发成功进度事件。
+- [x] `local-gateway/` 独立 uv 子项目：`pyproject.toml`、lockfile、FastAPI/uvicorn/requests，无 torch；默认只绑定 `127.0.0.1:8123`。阻塞的 requests/poll 放在普通 `def` 端点或线程中，不得阻塞 `/health`。
+- [x] 网关配置：`COMFYUI_BASE_URL` 默认 `http://127.0.0.1:9188`，`COMFYUI_MODELS_ROOT` 指向本机 `models/`。后者用于真实文件检查，不在代码或 tracked 配置中写死 `E:\ugit\...`。
+- [x] 原创 ComfyUI 客户端：submit `/prompt`、poll `/history`、view `/view`、upload `/upload/image`。每次 HTTP 调用有独立短超时；长任务的总 deadline 在各路由实现。
+- [x] 注册表先建立 P0-P5 所需模型元数据、权重清单与能力标志。路由未实现时不得标为可用。
+- [x] `GET /health` 同时做三类检查：`/system_stats` 的 GPU/RAM、`/object_info` 的节点与 loader 可选值、`COMFYUI_MODELS_ROOT` 下的附录 B 文件。返回 `ready`、`models_ready`、逐模型状态、逐路由 `implemented` 和可执行 `errors`。`ready` 只表示当前已启用路由可服务，P1 不得把未实现的 P2-P4 路由标为可用。完全就绪返回 200，否则返回 503；TTS 不得只凭 `model_size` 枚举就宣称权重目录存在。
+- [x] `start_gateway.bat` 与网关 README：先 ComfyUI(9188)，再网关(8123)，说明两个网关环境变量与 loopback 限制。无局域网访问需求时，ComfyUI 也应使用 `--listen 127.0.0.1`；本次运行时发现它监听 `0.0.0.0`，不得把该现状写成安全默认值。
+- [x] 根目录本地 `.env` 写入四条 URL：TTS、IMAGE、IMAGE_EDIT、VIDEO，均指向 `http://127.0.0.1:8123` 对应能力端点。
+- [x] CI 纳入网关：`.github/workflows/python-tests.yml` 的 push/pull_request paths 加 `local-gateway/**`；`lint-python.yml` 的 ruff 目标加 `local-gateway/`。
+- [x] 单测：local config 的四个工具键、未知 provider、缺 URL、连接失败与 tuple 契约、应用层 error 进度语义、图像 generate/edit 键选择、ComfyUI prompt 组装和 poll 终止判定。全部 fake 网络。
 
 验收：
 
