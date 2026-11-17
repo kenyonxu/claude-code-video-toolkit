@@ -1,12 +1,13 @@
 """Shared cloud GPU provider abstraction.
 
-Routes job submission to RunPod or Modal endpoints with a unified interface.
+Routes job submission to RunPod, Modal or local endpoints with a unified interface.
 Each tool builds its own payload dict, then calls call_cloud_endpoint() which
 handles submission, polling, timeout, and cancellation for the chosen provider.
 
 Supported providers:
 - runpod: RunPod serverless endpoints (existing)
-- modal: Modal web endpoints (new)
+- modal: Modal web endpoints (existing)
+- local: loopback local-gateway endpoints backed by local ComfyUI (new)
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
+from urllib.parse import urlsplit
 
 import requests
 from dotenv import load_dotenv
@@ -46,6 +48,13 @@ _MODAL_ENV_VARS = {
     "dewatermark": "MODAL_DEWATERMARK_ENDPOINT_URL",
     "ltx2": "MODAL_LTX2_ENDPOINT_URL",
     "soulx": "MODAL_SOULX_ENDPOINT_URL",
+}
+
+_LOCAL_ENV_VARS = {
+    "qwen3_tts": "LOCAL_TTS_ENDPOINT_URL",
+    "qwen_image": "LOCAL_IMAGE_ENDPOINT_URL",
+    "image_edit": "LOCAL_IMAGE_EDIT_ENDPOINT_URL",
+    "h3_video": "LOCAL_VIDEO_ENDPOINT_URL",
 }
 
 
@@ -233,6 +242,10 @@ def get_provider_config(provider: str, tool_name: str) -> dict:
     Returns dict with provider-specific keys:
     - RunPod: {"api_key": str, "endpoint_id": str}
     - Modal: {"endpoint_url": str, "token_id": str, "token_secret": str}
+    - Local: {"endpoint_url": str | None}. The URL comes from the tool's
+      LOCAL_*_ENDPOINT_URL env var; None means the var is unset or the tool
+      is not registered for local, which _call_local turns into an
+      actionable error dict.
     """
     if provider == "runpod":
         env_var = _RUNPOD_ENV_VARS.get(tool_name)
@@ -247,8 +260,13 @@ def get_provider_config(provider: str, tool_name: str) -> dict:
             "token_id": os.getenv("MODAL_TOKEN_ID"),
             "token_secret": os.getenv("MODAL_TOKEN_SECRET"),
         }
+    elif provider == "local":
+        env_var = _LOCAL_ENV_VARS.get(tool_name)
+        return {
+            "endpoint_url": os.getenv(env_var) if env_var else None,
+        }
     else:
-        raise ValueError(f"Unknown provider: {provider}. Use 'runpod' or 'modal'.")
+        raise ValueError(f"Unknown provider: {provider}. Use 'runpod', 'modal' or 'local'.")
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +287,8 @@ def call_cloud_endpoint(
     """Submit a job to a cloud GPU endpoint and wait for the result.
 
     Args:
-        provider: "runpod" or "modal"
+        provider: "runpod", "modal" or "local" (local posts once to the
+                   tool's LOCAL_* endpoint on the loopback gateway)
         payload: The job payload ({"input": {...}} for RunPod, raw dict for Modal)
         tool_name: Config lookup key (e.g., "qwen3_tts", "flux2")
         timeout: Overall timeout in seconds
@@ -311,9 +330,18 @@ def call_cloud_endpoint(
             progress_label=progress_label,
             progress=progress,
         )
+    elif provider == "local":
+        result, elapsed = _call_local(
+            payload=payload,
+            endpoint_url=config["endpoint_url"],
+            tool_name=tool_name,
+            timeout=timeout,
+            progress_label=progress_label,
+            progress=progress,
+        )
 
     else:
-        raise ValueError(f"Unknown provider: {provider}")
+        raise ValueError(f"Unknown provider: {provider}. Use 'runpod', 'modal' or 'local'.")
 
     # Print cost estimate
     if progress and elapsed > 0 and not result.get("error"):
@@ -569,3 +597,158 @@ def _call_modal(
         elapsed = time.time() - start
         _emit("error", f"Modal request failed: {e}", level="error")
         return {"error": f"Modal request failed: {e}"}, elapsed
+
+
+# ---------------------------------------------------------------------------
+# Local gateway implementation
+# ---------------------------------------------------------------------------
+
+# The local gateway is loopback-only, so a connection failure almost always
+# means "not started yet": point at the two start steps instead of Modal hints.
+_LOCAL_GATEWAY_HINT = (
+    " Is the local gateway running? Start ComfyUI (127.0.0.1:9188) first,"
+    " then run local-gateway/start_gateway.bat."
+)
+
+_LOCAL_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def _validate_local_endpoint(endpoint_url: str) -> str | None:
+    """Return an error message when the URL breaks the local transport rules.
+
+    Unlike the gateway's COMFYUI_BASE_URL (root path only), a local endpoint
+    must carry a non-root path such as /tts/generate, because the four
+    capability endpoints live below the gateway root.
+    """
+    parts = urlsplit(endpoint_url)
+    if parts.scheme != "http":
+        return f"Local endpoint URL must use http, got {endpoint_url!r}."
+    try:
+        parts.port
+    except ValueError:
+        return f"Local endpoint URL has an invalid port, got {endpoint_url!r}."
+    host = parts.hostname
+    if host is None or host.lower() not in _LOCAL_LOOPBACK_HOSTS:
+        return (f"Local endpoint URL must point at a loopback host"
+                f" (127.0.0.1, localhost or ::1), got {endpoint_url!r}.")
+    if parts.username or parts.password:
+        return f"Local endpoint URL must not embed credentials, got {endpoint_url!r}."
+    if parts.query or parts.fragment:
+        return f"Local endpoint URL must not contain a query or fragment, got {endpoint_url!r}."
+    if parts.path in ("", "/"):
+        return (f"Local endpoint URL must include a non-root path such as"
+                f" /tts/generate, got {endpoint_url!r}.")
+    return None
+
+
+def _extract_error_body(response) -> str:
+    """Prefer a JSON error/detail field, else the raw text, for non-200 bodies."""
+    try:
+        body = response.json()
+    except ValueError:
+        return response.text.strip()
+    if isinstance(body, dict):
+        if body.get("error"):
+            return str(body["error"])
+        if body.get("detail"):
+            return str(body["detail"])
+    return response.text.strip()
+
+
+def _call_local(
+    payload: dict,
+    endpoint_url: str | None,
+    tool_name: str,
+    timeout: int = 600,
+    progress_label: str = "Processing",
+    progress: ProgressReporter | None = None,
+) -> tuple[dict, float]:
+    """POST one synchronous request to the local gateway.
+
+    Mirrors _call_modal's synchronous shape with local rules: loopback HTTP
+    only, no credentials, one requests.Session per call with trust_env=False,
+    a single POST (no retry) and a (5, timeout + 30) connect/read timeout.
+    The read timeout is not a total deadline for the ComfyUI job behind the
+    gateway: when this client gives up, the gateway-side task keeps running;
+    this call never cancels it.
+    """
+    def _emit(stage, msg, level="dim", pct=None):
+        if progress:
+            progress.event(stage, msg, pct=pct, level=level)
+
+    if not endpoint_url:
+        env_var = _LOCAL_ENV_VARS.get(tool_name)
+        if env_var:
+            return {"error": (
+                f"Local endpoint URL not set for {tool_name}."
+                f" Set {env_var} in .env (e.g. http://127.0.0.1:8123/tts/generate)."
+            )}, 0
+        return {"error": (
+            f"Tool {tool_name!r} is not registered for the local provider."
+            f" Registered tools and their env vars: {dict(_LOCAL_ENV_VARS)}."
+        )}, 0
+
+    url_problem = _validate_local_endpoint(endpoint_url)
+    if url_problem:
+        return {"error": url_problem}, 0
+
+    # RunPod wraps payloads in {"input": ...}; the gateway, like Modal, wants
+    # the inner dict. Unwrap when the caller used the RunPod format.
+    local_payload = payload.get("input", payload) if isinstance(payload, dict) else payload
+    headers = {"Content-Type": "application/json"}
+
+    start = time.time()
+    _emit("submit", f"{progress_label} via local gateway...", level="info")
+
+    try:
+        heartbeat_ctx = (progress.heartbeat(
+            "waiting", f"{progress_label} via local gateway... ({{elapsed:.0f}}s)"
+        ) if progress else contextmanager(lambda: (yield))())
+        with requests.Session() as session:
+            session.trust_env = False
+            with heartbeat_ctx:
+                response = session.post(
+                    endpoint_url,
+                    json=local_payload,
+                    headers=headers,
+                    timeout=(5, timeout + 30),
+                )
+        elapsed = time.time() - start
+    except requests.exceptions.Timeout:
+        elapsed = time.time() - start
+        msg = (f"Local gateway request timed out after {elapsed:.0f}s."
+               f" The ComfyUI job was not cancelled and may still finish.{_LOCAL_GATEWAY_HINT}")
+        _emit("error", msg, level="error")
+        return {"error": msg}, elapsed
+    except requests.exceptions.RequestException as e:
+        elapsed = time.time() - start
+        msg = f"Local gateway connection failed: {e}.{_LOCAL_GATEWAY_HINT}"
+        _emit("error", msg, level="error")
+        return {"error": msg}, elapsed
+    except Exception as e:
+        elapsed = time.time() - start
+        _emit("error", f"Local gateway request failed: {e}", level="error")
+        return {"error": f"Local gateway request failed: {e}"}, elapsed
+
+    if response.status_code != 200:
+        message = _extract_error_body(response)[:500]
+        msg = f"Local gateway HTTP {response.status_code}: {message}"
+        _emit("error", msg, level="error")
+        return {"error": msg}, elapsed
+
+    try:
+        result = response.json()
+    except ValueError:
+        msg = f"Local gateway returned a non-JSON body: {response.text[:500]}"
+        _emit("error", msg, level="error")
+        return {"error": msg}, elapsed
+    if not isinstance(result, dict):
+        msg = f"Local gateway returned JSON that is not an object: {response.text[:500]}"
+        _emit("error", msg, level="error")
+        return {"error": msg}, elapsed
+    if result.get("error"):
+        _emit("error", f"Local gateway error: {result['error']}", level="error")
+        return {"error": str(result["error"])}, elapsed
+
+    _emit("complete", f"Completed in {elapsed:.1f}s", pct=100, level="success")
+    return result, elapsed

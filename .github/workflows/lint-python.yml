@@ -26,7 +26,7 @@ name: Lint Python
 # v0.20.0 bug because that refactor dropped the import too.
 #
 # Run the same check locally with:
-#   uvx ruff check --select F821,F811,F822,F823 scripts/ tools/
+#   uvx ruff check --select F821,F811,F822,F823 scripts/ tools/ local-gateway/
 
 on:
   pull_request:
@@ -55,4 +55,4 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Check for undefined names
-        run: uvx ruff check --select F821,F811,F822,F823 --output-format github scripts/ tools/
+        run: uvx ruff check --select F821,F811,F822,F823 --output-format github scripts/ tools/ local-gateway/
