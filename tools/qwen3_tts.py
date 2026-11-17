@@ -155,6 +155,7 @@ def generate_audio(
     cloud: str = "modal",
     progress=None,
     max_wpm: float | None = None,
+    model: str | None = None,
 ) -> dict:
     """Generate audio using Qwen3-TTS via cloud GPU.
 
@@ -188,8 +189,8 @@ def generate_audio(
         if any(not t for t in texts):
             return {"success": False, "error": "all texts must be non-empty strings"}
 
-        # Get R2 config (used for file transfer regardless of cloud provider)
-        r2_payload = get_r2_payload_config()
+        # R2 config for cloud providers only; local never touches external storage
+        r2_payload = None if cloud == "local" else get_r2_payload_config()
 
         # Determine mode
         if design_instruct is not None:
@@ -201,19 +202,31 @@ def generate_audio(
         else:
             mode = "custom_voice"
 
-        # Upload reference audio for clone mode
+        # Local gateway is clone-only (P2): reject before any upload or HTTP.
+        # ref_audio AND ref_text are both required -- without ref_text the
+        # generic clone check would fire later with a non-local error message.
+        if cloud == "local" and (mode != "clone" or not ref_text):
+            return {"success": False, "error": (
+                "--cloud local supports voice clone only: pass --ref-audio and"
+                f" --ref-text (requested mode: {mode})")}
+
+        # Reference audio for clone mode: inline base64 locally, R2 upload on cloud
         ref_audio_url = None
+        ref_audio_b64 = None
         if mode == "clone":
             if not Path(ref_audio).exists():
                 return {"success": False, "error": f"Reference audio not found: {ref_audio}"}
             if not ref_text:
                 return {"success": False, "error": "ref_text is required for voice cloning"}
 
-            ref_audio_url, ref_r2_key = upload_to_storage(ref_audio, "qwen3-tts/input")
-            if not ref_audio_url:
-                return {"success": False, "error": "Failed to upload reference audio"}
-            if ref_r2_key:
-                r2_keys_to_cleanup.append(ref_r2_key)
+            if cloud == "local":
+                ref_audio_b64 = base64.b64encode(Path(ref_audio).read_bytes()).decode("ascii")
+            else:
+                ref_audio_url, ref_r2_key = upload_to_storage(ref_audio, "qwen3-tts/input")
+                if not ref_audio_url:
+                    return {"success": False, "error": "Failed to upload reference audio"}
+                if ref_r2_key:
+                    r2_keys_to_cleanup.append(ref_r2_key)
 
         if verbose:
             print(f"Cloud provider: {cloud}", file=sys.stderr)
@@ -235,7 +248,10 @@ def generate_audio(
         }
 
         if mode == "clone":
-            payload["input"]["ref_audio_url"] = ref_audio_url
+            if cloud == "local":
+                payload["input"]["ref_audio_base64"] = ref_audio_b64
+            else:
+                payload["input"]["ref_audio_url"] = ref_audio_url
             payload["input"]["ref_text"] = ref_text
         elif mode == "voice_design":
             payload["input"]["instruct"] = design_instruct
@@ -248,6 +264,9 @@ def generate_audio(
             payload["input"]["temperature"] = temperature
         if top_p is not None:
             payload["input"]["top_p"] = top_p
+
+        if model is not None:
+            payload["input"]["model"] = model
 
         if r2_payload:
             payload["input"]["r2"] = r2_payload
@@ -309,33 +328,52 @@ def generate_audio(
             Path(dest_path).parent.mkdir(parents=True, exist_ok=True)
             downloaded = False
 
-            r2_key = item.get("r2_key")
-            url = item.get("audio_url")
-
-            if r2_key:
-                if verbose:
-                    print(f"Downloading output {i+1}/{len(outputs_list)} from R2...", file=sys.stderr)
-                downloaded = download_from_r2(r2_key, dest_path)
-                if downloaded:
-                    r2_keys_to_cleanup.append(r2_key)
-                    if verbose:
-                        size_kb = Path(dest_path).stat().st_size // 1024
-                        print(f"  Downloaded: {dest_path} ({size_kb}KB)", file=sys.stderr)
-
-            if not downloaded and url:
-                downloaded = download_from_url(url, dest_path, verbose=verbose)
-                # Same object the r2_key names -- register it however we fetched it.
-                if downloaded and r2_key:
-                    r2_keys_to_cleanup.append(r2_key)
-
-            if not downloaded:
+            if cloud == "local":
+                # Local results must be base64-only; any external reference
+                # is a contract violation, not a download source.
+                if item.get("r2_key") or item.get("audio_url"):
+                    return {"success": False, "error": (
+                        f"local gateway returned an external reference"
+                        f" (r2_key/audio_url) for output[{i}]; local results"
+                        " must be base64-only")}
                 audio_base64 = item.get("audio_base64")
-                if audio_base64:
-                    Path(dest_path).write_bytes(base64.b64decode(audio_base64))
-                    downloaded = True
+                if not audio_base64:
+                    return {"success": False, "error": (
+                        f"No audio_base64 in local output[{i}]:"
+                        f" {list(item.keys())}")}
+                Path(dest_path).write_bytes(base64.b64decode(audio_base64))
+                downloaded = True
+                if verbose:
+                    size_kb = Path(dest_path).stat().st_size // 1024
+                    print(f"  Decoded from base64: {dest_path} ({size_kb}KB)", file=sys.stderr)
+            else:
+                r2_key = item.get("r2_key")
+                url = item.get("audio_url")
+
+                if r2_key:
                     if verbose:
-                        size_kb = Path(dest_path).stat().st_size // 1024
-                        print(f"  Decoded from base64: {dest_path} ({size_kb}KB)", file=sys.stderr)
+                        print(f"Downloading output {i+1}/{len(outputs_list)} from R2...", file=sys.stderr)
+                    downloaded = download_from_r2(r2_key, dest_path)
+                    if downloaded:
+                        r2_keys_to_cleanup.append(r2_key)
+                        if verbose:
+                            size_kb = Path(dest_path).stat().st_size // 1024
+                            print(f"  Downloaded: {dest_path} ({size_kb}KB)", file=sys.stderr)
+
+                if not downloaded and url:
+                    downloaded = download_from_url(url, dest_path, verbose=verbose)
+                    # Same object the r2_key names -- register it however we fetched it.
+                    if downloaded and r2_key:
+                        r2_keys_to_cleanup.append(r2_key)
+
+                if not downloaded:
+                    audio_base64 = item.get("audio_base64")
+                    if audio_base64:
+                        Path(dest_path).write_bytes(base64.b64decode(audio_base64))
+                        downloaded = True
+                        if verbose:
+                            size_kb = Path(dest_path).stat().st_size // 1024
+                            print(f"  Decoded from base64: {dest_path} ({size_kb}KB)", file=sys.stderr)
 
             if not downloaded:
                 return {"success": False, "error": f"No audio in output[{i}]: {list(item.keys())}"}
@@ -835,6 +873,14 @@ Examples:
         help="Output format (default: mp3)",
     )
 
+    # Model passthrough (free string; the provider validates)
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Model name passed through to the provider (e.g. qwen3-tts-1.7B). Default: provider default.",
+    )
+
     # Generation parameters
     parser.add_argument(
         "--temperature",
@@ -1005,6 +1051,23 @@ def main():
         print("Error: --design-instruct and --ref-audio are mutually exclusive", file=sys.stderr)
         sys.exit(1)
 
+    # Local gateway is clone-only (P2): validate before any HTTP request.
+    if args.cloud == "local":
+        if args.design_instruct:
+            print(
+                "Error: --cloud local supports voice clone only;"
+                " --design-instruct needs a cloud provider",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not (args.ref_audio and args.ref_text):
+            print(
+                "Error: --cloud local supports voice clone only:"
+                " --ref-audio and --ref-text are both required",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     # Capitalize language for API
     language = args.language.capitalize()
 
@@ -1046,6 +1109,7 @@ def main():
         cloud=args.cloud,
         progress=reporter,
         max_wpm=args.max_wpm,
+        model=args.model,
     )
 
     if not result.get("success"):
