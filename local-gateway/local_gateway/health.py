@@ -81,6 +81,15 @@ def _check_files(entry: registry.ModelEntry, models_root: str):
         if not (root / rel).is_dir():
             ok = False
             missing.append(rel)
+    for rel in entry.required_nonempty_directories:
+        directory = root / rel
+        try:
+            nonempty = directory.is_dir() and any(directory.iterdir())
+        except OSError:
+            nonempty = False
+        if not nonempty:
+            ok = False
+            missing.append(rel)
     for rel in entry.required_files:
         if not (root / rel).is_file():
             ok = False

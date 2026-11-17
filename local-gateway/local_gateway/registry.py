@@ -28,29 +28,44 @@ class ModelEntry:
     capability: str
     required_files: tuple[str, ...] = ()
     required_directories: tuple[str, ...] = ()
+    # Directories that must exist AND contain at least one entry (P2 clone
+    # weights: an empty dir makes the AILab node fall back to
+    # snapshot_download, which the gateway must not trigger).
+    required_nonempty_directories: tuple[str, ...] = ()
     optional_files: tuple[str, ...] = ()
     required_nodes: tuple[str, ...] = ()
     required_options: tuple[RequiredOption, ...] = ()
+    # Capability metadata (P2): routes and preflight read these instead of
+    # hardcoding. CustomVoice/VoiceDesign never appear in modes.
+    modes: tuple[str, ...] = ()
+    output_formats: tuple[str, ...] = ()
+    max_batch_items: int = 0
+    deadline_chunk_seconds: int = 0
 
 
 MODEL_ENTRIES: tuple[ModelEntry, ...] = (
     ModelEntry(
         key="qwen3-tts-1.7B",
         capability="tts",
-        required_directories=("TTS/Qwen3-TTS/",),
+        required_directories=(),
+        required_nonempty_directories=(
+            "TTS/Qwen3-TTS-12Hz-1.7B-Base",
+            "TTS/Qwen3-TTS-Tokenizer-12Hz",
+        ),
         required_nodes=(
-            "AILab_Qwen3TTSCustomVoice",
-            "AILab_Qwen3TTSVoiceClone",
-            "AILab_Qwen3TTSVoiceDesign",
+            "AILab_Qwen3TTSVoiceClone_Advanced",
             "LoadAudio",
             "SaveAudioAdvanced",
         ),
         required_options=(
-            RequiredOption("AILab_Qwen3TTSCustomVoice", "model_size", ("1.7B",)),
-            RequiredOption("AILab_Qwen3TTSVoiceClone", "model_size", ("1.7B",)),
-            RequiredOption("AILab_Qwen3TTSVoiceDesign", "model_size", ("1.7B",)),
-            RequiredOption("AILab_Qwen3TTSCustomVoice", "speaker", ("Ryan",)),
+            RequiredOption("AILab_Qwen3TTSVoiceClone_Advanced", "model_size",
+                           ("1.7B",)),
+            RequiredOption("SaveAudioAdvanced", "format", ("mp3", "flac")),
         ),
+        modes=("clone",),
+        output_formats=("mp3", "wav"),
+        max_batch_items=8,
+        deadline_chunk_seconds=270,
     ),
     ModelEntry(
         key="qwen-image-2.1",

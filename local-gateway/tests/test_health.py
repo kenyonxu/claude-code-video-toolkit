@@ -35,22 +35,27 @@ class RegistryTests(unittest.TestCase):
             "minimax-h3-fl2va": "video",
         })
 
-    def test_tts_entry_directory_nodes_and_options(self):
+    def test_tts_entry_is_clone_only(self):
         entry = registry.model_by_key("qwen3-tts-1.7B")
-        self.assertEqual(entry.required_directories, ("TTS/Qwen3-TTS/",))
+        self.assertEqual(entry.required_directories, ())
+        self.assertEqual(entry.required_nonempty_directories, (
+            "TTS/Qwen3-TTS-12Hz-1.7B-Base",
+            "TTS/Qwen3-TTS-Tokenizer-12Hz",
+        ))
         self.assertEqual(entry.required_nodes, (
-            "AILab_Qwen3TTSCustomVoice",
-            "AILab_Qwen3TTSVoiceClone",
-            "AILab_Qwen3TTSVoiceDesign",
+            "AILab_Qwen3TTSVoiceClone_Advanced",
             "LoadAudio",
             "SaveAudioAdvanced",
         ))
-        for node in ("AILab_Qwen3TTSCustomVoice", "AILab_Qwen3TTSVoiceClone",
-                     "AILab_Qwen3TTSVoiceDesign"):
-            self.assertIn(RequiredOption(node, "model_size", ("1.7B",)),
-                          entry.required_options)
-        self.assertIn(RequiredOption("AILab_Qwen3TTSCustomVoice", "speaker", ("Ryan",)),
-                      entry.required_options)
+        self.assertEqual(entry.required_options, (
+            RequiredOption("AILab_Qwen3TTSVoiceClone_Advanced", "model_size",
+                           ("1.7B",)),
+            RequiredOption("SaveAudioAdvanced", "format", ("mp3", "flac")),
+        ))
+        self.assertEqual(entry.modes, ("clone",))
+        self.assertEqual(entry.output_formats, ("mp3", "wav"))
+        self.assertEqual(entry.max_batch_items, 8)
+        self.assertEqual(entry.deadline_chunk_seconds, 270)
 
     def test_image_entry_files_nodes_and_options(self):
         entry = registry.model_by_key("qwen-image-2.1")
@@ -147,18 +152,21 @@ def object_info_fixture(**overrides):
                           "minimax_h3_video_vae_fp16.safetensors",
                           "minimax_h3_image_vae_fp16.safetensors.safetensors"]],
         ]}},
-        "AILab_Qwen3TTSCustomVoice": {"input": {"required": [
+        "AILab_Qwen3TTSVoiceClone_Advanced": {"input": {"required": [
             ["model_size", ["0.6B", "1.7B"]],
-            ["speaker", ["Ryan", "Aiden"]],
-        ]}},
-        "AILab_Qwen3TTSVoiceClone": {"input": {"required": [
-            ["model_size", ["0.6B", "1.7B"]],
-        ]}},
-        "AILab_Qwen3TTSVoiceDesign": {"input": {"required": [
-            ["model_size", ["1.7B"]],
+            ["language", ["Auto", "English", "Chinese"]],
+            ["target_text", "STRING"],
+            ["reference_text", "STRING"],
+            ["reference_audio", "AUDIO"],
         ]}},
         "LoadAudio": {"input": {"required": [["audio", "AUDIO", {"tooltip": "x"}]]}},
-        "SaveAudioAdvanced": {"input": {"required": [["format", ["flac", "mp3", "opus"]]]}},
+        "SaveAudioAdvanced": {"input": {"required": [
+            ["format", "COMFY_DYNAMICCOMBO_V3", {"options": [
+                {"key": "flac", "inputs": {"required": {}}},
+                {"key": "mp3", "inputs": {"required": {}}},
+                {"key": "opus", "inputs": {"required": {}}},
+            ]}],
+        ]}},
         "TextEncodeQwenImage21": {"input": {"required": [
             ["width", "INT"], ["resolution", ["1024", "1280"]],
         ]}},
@@ -183,9 +191,14 @@ def object_info_fixture(**overrides):
 
 
 def build_model_tree(root, *, include=("tts", "image", "video"),
-                     optional_audio_vae=False):
+                     optional_audio_vae=False, empty_tts_dirs=False):
     if "tts" in include:
-        (root / "TTS" / "Qwen3-TTS").mkdir(parents=True, exist_ok=True)
+        for rel in ("TTS/Qwen3-TTS-12Hz-1.7B-Base",
+                    "TTS/Qwen3-TTS-Tokenizer-12Hz"):
+            d = root / rel
+            d.mkdir(parents=True, exist_ok=True)
+            if not empty_tts_dirs:
+                (d / "weights.safetensors").write_bytes(b"x")
     if "image" in include:
         for rel in (
             "diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors",
@@ -304,7 +317,7 @@ class HealthAggregationTests(unittest.TestCase):
                          {"code", "scope", "message", "action"})
         self.assertIn("minimax-h3-fl2va", file_errors[0]["message"])
 
-    def test_missing_tts_directory_is_reported(self):
+    def test_missing_tts_weight_directories_are_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             build_model_tree(root, include=("image", "video"))
@@ -313,7 +326,24 @@ class HealthAggregationTests(unittest.TestCase):
                 self.settings_for(root), lambda url: client)
         tts = payload["models"]["qwen3-tts-1.7B"]
         self.assertFalse(tts["files_ready"])
-        self.assertEqual(tts["missing_files"], ["TTS/Qwen3-TTS/"])
+        self.assertEqual(tts["missing_files"], [
+            "TTS/Qwen3-TTS-12Hz-1.7B-Base",
+            "TTS/Qwen3-TTS-Tokenizer-12Hz",
+        ])
+
+    def test_empty_tts_weight_directory_is_reported_as_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_model_tree(root, empty_tts_dirs=True)
+            client = FakeClient(object_info=object_info_fixture())
+            payload, _ = health.build_health_payload(
+                self.settings_for(root), lambda url: client)
+        tts = payload["models"]["qwen3-tts-1.7B"]
+        self.assertFalse(tts["files_ready"])
+        self.assertEqual(tts["missing_files"], [
+            "TTS/Qwen3-TTS-12Hz-1.7B-Base",
+            "TTS/Qwen3-TTS-Tokenizer-12Hz",
+        ])
 
     def test_missing_node_and_loader_value_are_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -341,14 +371,17 @@ class HealthAggregationTests(unittest.TestCase):
         # The image model is unaffected: its CLIPLoader.type value still exists.
         self.assertTrue(payload["models"]["qwen-image-2.1"]["ready"])
 
-    def test_tts_model_size_and_speaker_enums_are_checked(self):
+    def test_tts_model_size_enum_is_checked(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             build_model_tree(root)
             meta = object_info_fixture(
-                AILab_Qwen3TTSCustomVoice={"input": {"required": [
+                AILab_Qwen3TTSVoiceClone_Advanced={"input": {"required": [
                     ["model_size", ["0.6B"]],
-                    ["speaker", ["Chelsie"]],
+                    ["language", ["Auto", "English", "Chinese"]],
+                    ["target_text", "STRING"],
+                    ["reference_text", "STRING"],
+                    ["reference_audio", "AUDIO"],
                 ]}},
             )
             client = FakeClient(object_info=meta)
@@ -358,8 +391,7 @@ class HealthAggregationTests(unittest.TestCase):
         tts = payload["models"]["qwen3-tts-1.7B"]
         self.assertFalse(tts["nodes_ready"])
         self.assertEqual(tts["missing_loader_values"], [
-            "AILab_Qwen3TTSCustomVoice.model_size=1.7B",
-            "AILab_Qwen3TTSCustomVoice.speaker=Ryan",
+            "AILab_Qwen3TTSVoiceClone_Advanced.model_size=1.7B",
         ])
 
     def test_comfyui_unreachable_still_reports_file_results(self):

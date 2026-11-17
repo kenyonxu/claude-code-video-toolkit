@@ -1,0 +1,36 @@
+{
+  "1": {
+    "class_type": "LoadAudio",
+    "inputs": {
+      "audio": "ccvt_clone_ref.mp3"
+    }
+  },
+  "2": {
+    "class_type": "AILab_Qwen3TTSVoiceClone_Advanced",
+    "inputs": {
+      "reference_audio": ["1", 0],
+      "reference_text": "",
+      "target_text": "",
+      "language": "Auto",
+      "model_size": "1.7B",
+      "max_new_tokens": 2048,
+      "top_k": 50,
+      "repetition_penalty": 1.0,
+      "do_sample": false,
+      "attention": "auto",
+      "device": "auto",
+      "precision": "bf16",
+      "unload_models": true,
+      "seed": -1,
+      "x_vector_only": false
+    }
+  },
+  "3": {
+    "class_type": "SaveAudioAdvanced",
+    "inputs": {
+      "audio": ["2", 0],
+      "filename_prefix": "ccvt/tts_clone",
+      "format": "flac"
+    }
+  }
+}
