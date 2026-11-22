@@ -231,7 +231,7 @@ done
 | H3 尺寸 | `width` + `height` | 32 倍数，默认节点为 1344x768，不继承 LTX2 约束 |
 | quality/steps | `quality`、可选 `num_inference_steps` | quality 选注册表推荐步数，显式 steps 覆盖默认值，响应返回实际步数 |
 
-H3 网格、24 fps 与 `CLIPLoader.type` 已于 2026-11-17 通过本机源码和 `/object_info` 复核；Qwen resolution 语义及 loader 权重清单也已通过运行时元数据复核。旧 TTS 节点复核结论随 Qwen 路线废止。附录 B 的图像与视频文件已在文件系统逐项确认（旧 Qwen `TTS/Qwen3-TTS/` 目录检查同随 Qwen 路线废止，不再属于附录 B）。2026-11-18 的三项真实 clone 生成属已废止的 Qwen 路线，不构成 Confucius 验收；Confucius4 的 TTS 验收仅为上方 P2 未勾选清单对应的真实验收门。图像与视频仍未运行真实生成。
+H3 网格、24 fps 与 `CLIPLoader.type` 已于 2026-11-17 通过本机源码和 `/object_info` 复核；Qwen resolution 语义及 loader 权重清单也已通过运行时元数据复核。旧 TTS 节点复核结论随 Qwen 路线废止。附录 B 的图像与视频文件已在文件系统逐项确认（旧 Qwen `TTS/Qwen3-TTS/` 目录检查同随 Qwen 路线废止，不再属于附录 B）。2026-11-18 的三项真实 clone 生成属已废止的 Qwen 路线，不构成 Confucius 验收；Confucius4 的 TTS 验收仅为上方 P2 清单对应的真实验收门。图像与视频仍未运行真实生成。
 
 ## 附录 B：`/health` 模型检查清单
 

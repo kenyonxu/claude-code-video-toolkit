@@ -1342,16 +1342,19 @@ class FakeSession:
         return self.response
 
 
-def client_with(session) -> cc.ConfuciusClient:
+def health_with(session) -> dict:
+    # The client opens a fresh Session per call (approved spec), so the
+    # patch must span construction AND health(); calling health() outside
+    # the patch would build a real Session and dial 127.0.0.1 for real.
     with mock.patch.object(cc.requests, "Session", return_value=session):
-        return cc.ConfuciusClient("http://127.0.0.1:8765")
+        return cc.ConfuciusClient("http://127.0.0.1:8765").health()
 
 
 class HealthTests(unittest.TestCase):
     def test_ok_payload_is_returned(self):
         session = FakeSession(response=FakeStreamResponse(
             json_data={"status": "ok", "sample_rate": 22050}))
-        payload = client_with(session).health()
+        payload = health_with(session)
         self.assertEqual(payload, {"status": "ok", "sample_rate": 22050})
         self.assertFalse(session.trust_env)
         self.assertTrue(session.closed)
@@ -1363,39 +1366,39 @@ class HealthTests(unittest.TestCase):
             with self.subTest(status=payload["status"]):
                 session = FakeSession(response=FakeStreamResponse(
                     status_code=503, json_data=payload))
-                self.assertEqual(client_with(session).health(), payload)
+                self.assertEqual(health_with(session), payload)
 
     def test_http_503_without_json_is_unavailable(self):
         session = FakeSession(response=FakeStreamResponse(
             status_code=503, json_error=True))
         with self.assertRaises(cc.ConfuciusError) as ctx:
-            client_with(session).health()
+            health_with(session)
         self.assertEqual(ctx.exception.code, "tts_backend_unavailable")
 
     def test_connection_error_is_unavailable(self):
         session = FakeSession(
             exc=requests.exceptions.ConnectionError("refused"))
         with self.assertRaises(cc.ConfuciusError) as ctx:
-            client_with(session).health()
+            health_with(session)
         self.assertEqual(ctx.exception.code, "tts_backend_unavailable")
 
     def test_timeout_is_timeout(self):
         session = FakeSession(
             exc=requests.exceptions.ReadTimeout("slow"))
         with self.assertRaises(cc.ConfuciusError) as ctx:
-            client_with(session).health()
+            health_with(session)
         self.assertEqual(ctx.exception.code, "tts_backend_timeout")
 
     def test_non_object_json_is_protocol_error(self):
         session = FakeSession(response=FakeStreamResponse(json_data=[1]))
         with self.assertRaises(cc.ConfuciusError) as ctx:
-            client_with(session).health()
+            health_with(session)
         self.assertEqual(ctx.exception.code, "tts_backend_error")
 
     def test_missing_status_string_is_protocol_error(self):
         session = FakeSession(response=FakeStreamResponse(json_data={}))
         with self.assertRaises(cc.ConfuciusError) as ctx:
-            client_with(session).health()
+            health_with(session)
         self.assertEqual(ctx.exception.code, "tts_backend_error")
 
 
@@ -5069,12 +5072,15 @@ if ! test -f /e/GitHub/_confucius4_tts_venv/python.exe; then
     --clone "C:/Users/kenyo/miniconda3/envs/confuciustts" -y
 fi
 uv pip install --python "E:/GitHub/_confucius4_tts_venv/python.exe" \
-  "fastapi>=0.110" "uvicorn>=0.29" "python-multipart>=0.0.9"
+  "fastapi==0.162.5" "uvicorn==0.54.0" "python-multipart==0.0.32" \
+  "starlette==1.7.0" "pydantic==2.14.4" "pydantic-core==2.50.5" "click==8.5.1" \
+  "annotated-doc==0.0.6" "annotated-types==0.8.0" "typing-inspection==0.4.5" \
+  "opentelemetry-api==1.45.2"
 "E:/GitHub/_confucius4_tts_venv/python.exe" -I -c \
   'import torch, transformers, fastapi, uvicorn, multipart; assert torch.__version__ == "2.7.0+cu128", torch.__version__; assert torch.cuda.is_available(); print(torch.__version__, transformers.__version__, fastapi.__version__)'
 ```
 
-Expected: 末行打印 `2.7.0+cu128`、transformers/fastapi 版本；不得出现 cu126、torch 重装或源环境修改。
+Expected: 末行打印 `2.7.0+cu128 4.52.4 0.162.5`（torch/transformers/fastapi，与上方锚定的 11 个已接受版本一致）；不得出现 cu126、torch 重装、依赖版本漂移或源环境修改。
 
 - [ ] **Step 3: 启动 worker 并等待 ok**
 
