@@ -7,6 +7,7 @@ The confucius4_tts generator is faked; no network, no ElevenLabs SDK.
 from __future__ import annotations
 
 import io
+import json
 import sys
 import tempfile
 import unittest
@@ -219,6 +220,46 @@ class MainGuardTests(unittest.TestCase):
             "o.mp3"])
         self.assertEqual(code, 1)
         self.assertIn("confucius4", text)
+
+    def test_scene_dry_run_never_calls_the_generator(self):
+        """Regression: the scene dry-run call site once kept a stale
+        qwen_model= keyword after the --tts-model rename (a TypeError on
+        every confucius4/qwen3 scene dry-run). Drive main() end to end and
+        prove the dry-run path parses, prints JSON and generates nothing."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            scene_dir = root / "scenes"
+            scene_dir.mkdir()
+            (scene_dir / "01_a.txt").write_text("first scene", encoding="utf-8")
+            (scene_dir / "02_b.txt").write_text("second scene", encoding="utf-8")
+            reference = root / "ref.mp3"
+            reference.write_bytes(b"reference")
+            out = io.StringIO()
+            err = io.StringIO()
+            with mock.patch.object(sys, "argv", [
+                    "voiceover.py", "--provider", "confucius4", "--cloud",
+                    "local", "--tts-model", "confucius4-tts",
+                    "--scene-dir", str(scene_dir), "--dry-run", "--json",
+                    "--ref-audio", str(reference)]), \
+                    mock.patch("voiceover.load_dotenv"), \
+                    mock.patch("sys.stdout", out), \
+                    mock.patch("sys.stderr", err), \
+                    mock.patch(
+                        "voiceover.generate_single_audio_confucius4") as single, \
+                    mock.patch(
+                        "voiceover.generate_batch_audio_confucius4") as batch:
+                try:
+                    voiceover.main()
+                    code = 0
+                except SystemExit as e:
+                    code = e.code
+            payload = json.loads(out.getvalue())
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertTrue(payload["dry_run"])
+        self.assertEqual(payload["provider"], "confucius4")
+        self.assertEqual(len(payload["scenes"]), 2)
+        single.assert_not_called()
+        batch.assert_not_called()
 
 
 if __name__ == "__main__":
