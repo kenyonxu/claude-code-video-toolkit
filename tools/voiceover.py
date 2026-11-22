@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate voiceover audio using ElevenLabs or Qwen3-TTS.
+Generate voiceover audio using ElevenLabs, Qwen3-TTS or Confucius4-TTS.
 
 Usage:
     # From script file (ElevenLabs, default)
@@ -28,6 +28,10 @@ Usage:
     uv run tools/voiceover.py --provider qwen3 --speaker Ryan --scene-dir public/audio/scenes --json
     uv run tools/voiceover.py --provider qwen3 --tone warm --scene-dir public/audio/scenes --json
     uv run tools/voiceover.py --provider qwen3 --instruct "Speak warmly" --script script.txt --output out.mp3
+
+    # Local Confucius4 voice clone
+    uv run tools/voiceover.py --provider confucius4 --cloud local --tts-model confucius4-tts \
+      --language zh --script script.txt --ref-audio ref.mp3 --output out.mp3
 """
 from __future__ import annotations
 
@@ -212,7 +216,7 @@ Examples:
         "--provider",
         type=str,
         default="elevenlabs",
-        choices=["elevenlabs", "qwen3", "60db"],
+        choices=["elevenlabs", "qwen3", "confucius4", "60db"],
         help="TTS provider (default: elevenlabs)",
     )
 
@@ -277,7 +281,8 @@ Examples:
     )
     parser.set_defaults(enhance=True)
 
-    # Qwen3-TTS-specific options
+    # Qwen3-TTS/Confucius4 options (--ref-audio serves both clone routes;
+    # confucius4 takes no ref_text)
     parser.add_argument(
         "--speaker",
         type=str,
@@ -304,12 +309,12 @@ Examples:
     parser.add_argument(
         "--ref-audio",
         type=str,
-        help="Qwen3-TTS reference audio file for voice cloning",
+        help="Reference audio for Qwen3 or Confucius4 voice cloning",
     )
     parser.add_argument(
         "--ref-text",
         type=str,
-        help="Qwen3-TTS transcript of reference audio (required with --ref-audio)",
+        help="Qwen3 cloud clone transcript (not accepted by confucius4)",
     )
     parser.add_argument(
         "--temperature",
@@ -322,29 +327,30 @@ Examples:
         help="Qwen3-TTS nucleus sampling (default: model default ~0.8, range: 0.1-1.0)",
     )
     parser.add_argument(
-        "--qwen-model",
+        "--tts-model",
         type=str,
         default=None,
-        help="Qwen3-TTS model name passed through on every qwen3 path"
-             " (e.g. qwen3-tts-1.7B). The gateway validates it; default"
-             " omits the field.",
+        help="Model name passed through on every qwen3/confucius4 path"
+             " (e.g. confucius4-tts). The gateway validates it; default"
+             " omits the field. Not the ElevenLabs --model.",
     )
     parser.add_argument(
         "--timeout",
         type=int,
         default=300,
-        help="Qwen3-TTS per-job timeout in seconds; batches scale it by"
-             " count, matching the gateway (default: 300)",
+        help="Qwen3-TTS/Confucius4 per-job timeout in seconds; batches"
+             " scale it by count (default: 300)",
     )
 
-    # Cloud GPU provider (for Qwen3-TTS)
+    # Cloud GPU provider (Qwen3-TTS cloud; local = Confucius4-TTS clone)
     parser.add_argument(
         "--cloud",
         type=str,
         default="modal",
         choices=["runpod", "modal", "local"],
-        help="Cloud GPU provider for Qwen3-TTS (default: modal; local ="
-             " loopback gateway, voice clone only)",
+        help="Cloud GPU provider for Qwen3-TTS (default: modal). Qwen3 has"
+             " no local route: local selects the Confucius4-TTS loopback"
+             " gateway, voice clone only",
     )
 
     # Brand integration
@@ -390,8 +396,8 @@ Examples:
         "--progress",
         choices=["human", "json"],
         default=None,
-        help="Qwen3 only: relay the cloud call's progress on stderr, including its "
-             "'cost' event (json: one JSON line per event, for agents and job runners)",
+        help="Qwen3/Confucius4: relay the provider call's progress on stderr, "
+             "including its 'cost' event (json: one JSON line per event, for agents and job runners)",
     )
     return parser.parse_args()
 
@@ -825,6 +831,81 @@ def generate_batch_audio_qwen3(
     ]
 
 
+def generate_single_audio_confucius4(
+    script: str,
+    output_path: Path,
+    lang: str = "zh",
+    ref_audio: str | None = None,
+    cloud: str = "local",
+    model: str | None = None,
+    timeout: int = 300,
+    max_wpm: float | None = None,
+    progress=None,
+) -> dict:
+    """Generate a single audio file with Confucius4-TTS on the local gateway."""
+    error = local_clone_error("confucius4", cloud, ref_audio)
+    if error:
+        return {"success": False, "error": error}
+
+    from confucius4_tts import generate_audio
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    return generate_audio(
+        text=script,
+        output_path=str(output_path),
+        lang=lang,
+        ref_audio=ref_audio,
+        output_format="mp3",
+        timeout=timeout,
+        model=model,
+        cloud=cloud,
+        verbose=False,
+        max_wpm=max_wpm,
+        progress=progress,
+    )
+
+
+def generate_batch_audio_confucius4(
+    scripts: list[str],
+    output_paths: list[Path],
+    lang: str = "zh",
+    ref_audio: str | None = None,
+    cloud: str = "local",
+    model: str | None = None,
+    timeout: int = 300,
+    max_wpm: float | None = None,
+    progress=None,
+) -> list[dict]:
+    """Generate up to 8 audio files in one Confucius4-TTS gateway request."""
+    error = local_clone_error("confucius4", cloud, ref_audio)
+    if error:
+        return [{"success": False, "error": error}]
+
+    from confucius4_tts import generate_audio
+
+    for p in output_paths:
+        p.parent.mkdir(parents=True, exist_ok=True)
+    result = generate_audio(
+        text=scripts,
+        output_path=[str(p) for p in output_paths],
+        lang=lang,
+        ref_audio=ref_audio,
+        output_format="mp3",
+        timeout=timeout,
+        model=model,
+        cloud=cloud,
+        verbose=False,
+        max_wpm=max_wpm,
+        progress=progress,
+    )
+    if not result.get("success"):
+        err = result.get("error", "batch generation failed")
+        return [{"success": False, "error": err, "output": str(p)}
+                for p in output_paths]
+    return [{"success": True, **item}
+            for item in result.get("outputs", [])]
+
+
 def process_scene_directory(
     scene_dir: Path,
     dry_run: bool = False,
@@ -853,12 +934,12 @@ def process_scene_directory(
     top_p: float | None = None,
     cloud: str = "runpod",
     max_wpm: float | None = None,
-    qwen_model: str | None = None,
+    tts_model: str | None = None,
     timeout: int = 300,
     progress=None,
 ) -> list[dict]:
     """Process all .txt files in directory, generate .mp3 for each."""
-    error = local_clone_error("qwen3", cloud, ref_audio)
+    error = local_clone_error(provider, cloud, ref_audio)
     if error:
         return [{"success": False, "error": error}], 0.0, 0
 
@@ -949,7 +1030,7 @@ def process_scene_directory(
             top_p=top_p,
             cloud=cloud,
             max_wpm=max_wpm,
-            model=qwen_model,
+            model=tts_model,
             timeout=timeout,
             progress=progress,
         )
@@ -967,12 +1048,55 @@ def process_scene_directory(
                     print(f"  {s['mp3_file'].name}  [FAILED: {r.get('error')}]", file=sys.stderr)
         return results, total_duration, total_chars
 
+    can_batch_confucius4 = (
+        provider == "confucius4"
+        and 1 < len(scenes) <= 8  # the gateway accepts at most 8 items
+    )
+
+    if can_batch_confucius4:
+        if not json_output:
+            print(f"Batching {len(scenes)} scenes in one Confucius4 call — mode: clone (shared reference)", file=sys.stderr)
+        batch_results = generate_batch_audio_confucius4(
+            scripts=[s["script"] for s in scenes],
+            output_paths=[s["mp3_file"] for s in scenes],
+            lang=language,
+            ref_audio=ref_audio,
+            cloud=cloud,
+            model=tts_model,
+            timeout=timeout,
+            max_wpm=max_wpm,
+            progress=progress,
+        )
+        for s, r in zip(scenes, batch_results):
+            r["script"] = str(s["txt_file"])
+            results.append(r)
+            if r.get("duration_seconds"):
+                total_duration += r["duration_seconds"]
+            if not json_output:
+                if r.get("success"):
+                    print(f"  {s['mp3_file'].name} ({r.get('duration_seconds', '?')}s{_pace_note(r)})", file=sys.stderr)
+                else:
+                    print(f"  {s['mp3_file'].name}  [FAILED: {r.get('error')}]", file=sys.stderr)
+        return results, total_duration, total_chars
+
     # Fallback: serial per-scene generation
     for s in scenes:
         if not json_output:
             print(f"Generating {s['mp3_file'].name}...", file=sys.stderr)
 
-        if provider == "qwen3":
+        if provider == "confucius4":
+            result = generate_single_audio_confucius4(
+                script=s["script"],
+                output_path=s["mp3_file"],
+                lang=language,
+                ref_audio=ref_audio,
+                cloud=cloud,
+                model=tts_model,
+                timeout=timeout,
+                max_wpm=max_wpm,
+                progress=progress,
+            )
+        elif provider == "qwen3":
             result = generate_single_audio_qwen3(
                 script=s["script"],
                 output_path=s["mp3_file"],
@@ -985,7 +1109,7 @@ def process_scene_directory(
                 top_p=top_p,
                 cloud=cloud,
                 max_wpm=max_wpm,
-                model=qwen_model,
+                model=tts_model,
                 timeout=timeout,
                 progress=progress,
             )
@@ -1104,6 +1228,27 @@ def main():
 
     provider = args.provider
 
+    if provider == "confucius4":
+        if args.language == "Auto":
+            args.language = "zh"
+        from confucius4_tts import SUPPORTED_LANGUAGES
+        if args.language not in SUPPORTED_LANGUAGES:
+            print(f"Error: --language must be one of"
+                  f" {', '.join(SUPPORTED_LANGUAGES)} for confucius4"
+                  f" (got {args.language!r})", file=sys.stderr)
+            sys.exit(1)
+        if (args.speaker != "Ryan" or args.instruct or args.tone
+                or args.ref_text or args.temperature is not None
+                or args.top_p is not None):
+            print(
+                "Error: --provider confucius4 supports voice clone only:"
+                " --ref-text, built-in speakers, instruct/tone and sampling"
+                " parameters are not available locally. Pass only"
+                " --ref-audio plus the text/language options.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
     # Validate argument combinations
     if args.scene_dir and args.script:
         print("Error: Cannot use both --scene-dir and --script", file=sys.stderr)
@@ -1117,7 +1262,7 @@ def main():
         print("Error: --output is required for single-file mode", file=sys.stderr)
         sys.exit(1)
 
-    if args.ref_audio and not args.ref_text:
+    if provider != "confucius4" and args.ref_audio and not args.ref_text:
         print("Error: --ref-text is required with --ref-audio", file=sys.stderr)
         sys.exit(1)
 
@@ -1140,7 +1285,23 @@ def main():
         if voice_config.get("minTempo") and args.min_tempo is None:
             args.min_tempo = voice_config["minTempo"]
 
-        if provider == "qwen3":
+        if provider == "confucius4":
+            confucius4_cfg = voice_config.get("confucius4", {})
+            clone_cfg = confucius4_cfg.get("clone", {})
+            if clone_cfg and not args.ref_audio:
+                if "design" in clone_cfg:
+                    design_guard = local_clone_error(
+                        provider, args.cloud, None, brand_design=True)
+                    if design_guard:
+                        print(f"Error: {design_guard}", file=sys.stderr)
+                        sys.exit(1)
+                elif "refAudio" in clone_cfg:
+                    ref_audio_path = get_brand_dir(args.brand) / clone_cfg["refAudio"]
+                    if ref_audio_path.exists():
+                        args.ref_audio = str(ref_audio_path)
+                    else:
+                        print(f"Warning: Clone ref audio not found: {ref_audio_path}", file=sys.stderr)
+        elif provider == "qwen3":
             qwen3_cfg = voice_config.get("qwen3", {})
             clone_cfg = qwen3_cfg.get("clone", {})
             if clone_cfg and not args.ref_audio:
@@ -1258,9 +1419,10 @@ def main():
         )
         args.instruct = ""
 
-    # Local gateway is clone-only (P2): every qwen3 local path (single,
-    # scene-dir, batch, brand) must carry a reference voice.
-    if provider == "qwen3":
+    # The local gateway is clone-only (P2) and serves confucius4 alone:
+    # every local path (single, scene-dir, batch, brand) must carry a
+    # reference voice, and qwen3+local is refused outright.
+    if provider in ("qwen3", "confucius4"):
         guard = local_clone_error(provider, args.cloud, args.ref_audio)
         if guard:
             print(f"Error: {guard}", file=sys.stderr)
@@ -1336,7 +1498,7 @@ def main():
 
         if not args.json:
             txt_count = len(list(scene_dir.glob("*.txt")))
-            provider_label = {"qwen3": "Qwen3-TTS", "60db": "60db"}.get(provider, "ElevenLabs")
+            provider_label = {"qwen3": "Qwen3-TTS", "confucius4": "Confucius4-TTS", "60db": "60db"}.get(provider, "ElevenLabs")
             print(f"Processing {txt_count} scene scripts in {scene_dir} ({provider_label})...", file=sys.stderr)
 
         if args.dry_run:
@@ -1365,7 +1527,7 @@ def main():
                 temperature=args.temperature,
                 top_p=args.top_p,
                 cloud=args.cloud,
-                qwen_model=args.qwen_model,
+                tts_model=args.tts_model,
                 timeout=args.timeout,
             )
             result = {
@@ -1433,7 +1595,7 @@ def main():
             temperature=args.temperature,
             top_p=args.top_p,
             cloud=args.cloud,
-            qwen_model=args.qwen_model,
+            tts_model=args.tts_model,
             timeout=args.timeout,
             max_wpm=args.max_wpm,
             progress=_progress_reporter(args),
@@ -1540,10 +1702,22 @@ def main():
 
     # Generate voiceover
     if not args.json:
-        provider_label = {"qwen3": "Qwen3-TTS", "60db": "60db"}.get(provider, "ElevenLabs")
+        provider_label = {"qwen3": "Qwen3-TTS", "confucius4": "Confucius4-TTS", "60db": "60db"}.get(provider, "ElevenLabs")
         print(f"Generating voiceover ({len(script)} chars, {provider_label})...", file=sys.stderr)
 
-    if provider == "qwen3":
+    if provider == "confucius4":
+        result = generate_single_audio_confucius4(
+            script=script,
+            output_path=output_path,
+            lang=args.language,
+            ref_audio=args.ref_audio,
+            cloud=args.cloud,
+            model=args.tts_model,
+            timeout=args.timeout,
+            max_wpm=args.max_wpm,
+            progress=_progress_reporter(args),
+        )
+    elif provider == "qwen3":
         result = generate_single_audio_qwen3(
             script=script,
             output_path=output_path,
@@ -1555,7 +1729,7 @@ def main():
             temperature=args.temperature,
             top_p=args.top_p,
             cloud=args.cloud,
-            model=args.qwen_model,
+            model=args.tts_model,
             timeout=args.timeout,
             max_wpm=args.max_wpm,
             progress=_progress_reporter(args),
