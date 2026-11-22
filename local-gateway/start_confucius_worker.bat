@@ -11,4 +11,4 @@ if not defined CONFUCIUS4_TTS_ROOT (
   exit /b 2
 )
 rem The checkout path is process-local configuration, never a committed default.
-"E:\GitHub\_confucius4_tts_venv\Scripts\python.exe" "%~dp0local_gateway\confucius_worker.py" --root "%CONFUCIUS4_TTS_ROOT%" --host 127.0.0.1 --port 8765
+"E:\GitHub\_confucius4_tts_venv\python.exe" "%~dp0local_gateway\confucius_worker.py" --root "%CONFUCIUS4_TTS_ROOT%" --host 127.0.0.1 --port 8765

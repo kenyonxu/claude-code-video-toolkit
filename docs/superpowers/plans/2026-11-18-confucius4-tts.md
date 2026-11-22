@@ -1487,7 +1487,7 @@ if not defined CONFUCIUS4_TTS_ROOT (
   exit /b 2
 )
 rem The checkout path is process-local configuration, never a committed default.
-"E:\GitHub\_confucius4_tts_venv\Scripts\python.exe" "%~dp0local_gateway\confucius_worker.py" --root "%CONFUCIUS4_TTS_ROOT%" --host 127.0.0.1 --port 8765
+"E:\GitHub\_confucius4_tts_venv\python.exe" "%~dp0local_gateway\confucius_worker.py" --root "%CONFUCIUS4_TTS_ROOT%" --host 127.0.0.1 --port 8765
 ```
 
 在根 `.gitignore` 的 `scratch/` 规则后追加，防止目录联接后的权重被 `git add -A` 捕获：
@@ -4850,18 +4850,18 @@ Expected: 输出 `Repository-local HF cache and checkpoints OK`（若失败，�
 
 - [ ] **Step 2: 克隆已验证环境到 worker 隔离前缀（一次性，不入库）**
 
-不从 PyPI 重装 requirements/torch；源 `confuciustts` 与 miniconda base 均保持只读，仅向克隆前缀补 HTTP 依赖。
+不从 PyPI 重装 requirements/torch；源 `confuciustts` 与 miniconda base 均保持只读，仅向克隆前缀补 HTTP 依赖。隔离前缀是 conda 前缀，`python.exe` 位于前缀根目录（不存在 `Scripts/python.exe`）；`CONDA_NUMBER_CHANNEL_NOTICES=0` 关闭 conda 自带的频道公告请求（本机 conda 25.1.1 读取该变量，不识别 `CONDA_NO_NOTICES`），克隆本身不下载任何包。
 
 ```bash
 set -euo pipefail
-if ! test -f /e/GitHub/_confucius4_tts_venv/Scripts/python.exe; then
-  "C:/Users/kenyo/miniconda3/Scripts/conda.exe" create \
+if ! test -f /e/GitHub/_confucius4_tts_venv/python.exe; then
+  CONDA_NUMBER_CHANNEL_NOTICES=0 "C:/Users/kenyo/miniconda3/Scripts/conda.exe" create \
     -p "E:/GitHub/_confucius4_tts_venv" \
     --clone "C:/Users/kenyo/miniconda3/envs/confuciustts" -y
 fi
-uv pip install --python "E:/GitHub/_confucius4_tts_venv/Scripts/python.exe" \
+uv pip install --python "E:/GitHub/_confucius4_tts_venv/python.exe" \
   "fastapi>=0.110" "uvicorn>=0.29" "python-multipart>=0.0.9"
-"E:/GitHub/_confucius4_tts_venv/Scripts/python.exe" -I -c \
+"E:/GitHub/_confucius4_tts_venv/python.exe" -I -c \
   'import torch, transformers, fastapi, uvicorn, multipart; assert torch.__version__ == "2.7.0+cu128", torch.__version__; assert torch.cuda.is_available(); print(torch.__version__, transformers.__version__, fastapi.__version__)'
 ```
 
