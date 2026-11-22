@@ -3,6 +3,7 @@
 > 状态：**已定稿，未实施**。定稿日期 2026-11-14。
 > 范围决议：配音走本地 Qwen3-TTS；音乐不变（保持默认 acemusic 路线）；出图用 Qwen Image 2.1（本地权重）；视频用 MiniMax H3（本地权重）。改造风格：正规 provider（可上游 PR 质量）。
 > 前置事实已核实：三套模型权重全部在 `E:\ugit\comfyui`，ComfyUI 可用（端口 9188）。
+> 修订（2026-11-18）：本计划的 TTS 部分（原设想全部经 ComfyUI Qwen 节点）已被独立 Confucius4-TTS worker 路线取代，见 [2026-11-18 Confucius4 规格](./superpowers/specs/2026-11-18-confucius4-tts-design.md)。图像/视频经 ComfyUI 的设想不变。
 
 ## Context
 

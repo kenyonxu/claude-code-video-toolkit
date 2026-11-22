@@ -1,5 +1,10 @@
 # P2 设计规格：local ComfyUI Voice Clone 路由
 
+> **SUPERSEDED (2026-11-18)：本文的 Qwen ComfyUI 路线已被
+> [2026-11-18-confucius4-tts-design.md](./2026-11-18-confucius4-tts-design.md)
+> 取代。TTS 改走独立 Confucius4-TTS worker（基础 Transformers，端口 8765），不再使用
+> AILab 节点、ComfyUI workflow 或 `ref_text`。本文仅作历史记录，不得据此实施。**
+
 > 状态：**clone-only 修订已于 2026-11-17 获确认，待书面复审，未实施**。
 > 前置文档：[P0/P1 设计规格](../../local-comfyui-provider-p0-p1-design.md) 与 [实施路线图](../../local-comfyui-provider-roadmap.md)。本文按用户意见将原 P2 三模式方案收敛为 Voice Clone 单一模式，P3-P5 仍按路线图执行。
 > 本规格在 `feat/local-comfyui-provider-p2` 分支提交。本文中的「必须」是验收要求，「不得」是边界。

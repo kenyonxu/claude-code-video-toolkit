@@ -1,6 +1,7 @@
 # P0/P1 设计规格：local ComfyUI provider 仓库准备与链路骨架
 
 > 状态：**分节设计已于 2026-11-17 获确认，待书面规格审阅，未实施**。
+> 修订（2026-11-18）：P2 的 TTS 后端已改为独立 Confucius4-TTS worker，见 [2026-11-18 Confucius4 规格](./superpowers/specs/2026-11-18-confucius4-tts-design.md)。本文记录的 P0/P1 已完成事实不变；其中涉及 P2 TTS 经 ComfyUI 的展望以新规格为准。仅就 P2 之后的 `/health`，原 `ready` 公式中的 `comfyui.reachable` 合取由独立 worker readiness 取代，ComfyUI 可达性保留为诊断信息，不再要求为 P2 启动 ComfyUI。
 > 上游文档：[技术 plan](./local-comfyui-provider-plan.md) 与 [实施路线图](./local-comfyui-provider-roadmap.md)。本文细化其中的 P0/P1，不重新打开已确认的 P2-P5 范围。
 > 本文中的「必须」是验收要求，「不得」是边界。实施前不得把 checkbox 或路由能力标为已完成。
 

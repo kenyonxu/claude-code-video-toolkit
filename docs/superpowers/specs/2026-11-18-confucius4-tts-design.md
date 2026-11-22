@@ -1,8 +1,8 @@
 # Confucius4-TTS 本地语音克隆设计规格
 
-> 状态：**分节设计已于 2026-11-18 获确认，待书面规格审阅，未实施**。
+> 状态：**分节设计已于 2026-11-18 获确认；2026-11-22 按上游新整合指南完成执行前同步，进入实施**。
 > 本文取代 `docs/superpowers/specs/2026-11-17-local-comfyui-p2-design.md` 中的 Qwen ComfyUI 路线及其实施计划。旧 Task 9 不再恢复，旧提交不通过 reset 或混合 revert 删除。
-> 前置事实：基础 Transformers 后端已获选择；`E:/GitHub/Confucius4-TTS` 的基础 `ConfuciusTTS` 可复用；所需 Hugging Face 缓存文件已逐项确认存在且非空。
+> 前置事实：基础 Transformers 后端已获选择；`E:/GitHub/Confucius4-TTS` 的基础 `ConfuciusTTS` 可复用。按上游 `INTEGRATION.zh-CN.md` 与提交 `366fdc0`，模型已从用户 HF cache 迁至仓库内 `models/hf/`，所需文件已重新逐项确认存在且非空。
 > 本文中的「必须」是验收要求，「不得」是边界。
 
 ## 1. 目标与范围
@@ -14,8 +14,8 @@
 1. `confucius4_tts.py` 与 `voiceover.py --provider confucius4` 的 local clone 全链路可用。
 2. `POST /tts/generate` 只接受 clone，不要求也不接受 `ref_text`、Qwen 节点、Qwen sampling 或 Qwen model_size。
 3. 独立 worker 只加载一次 `ConfuciusTTS`，使用基础 Transformers，不使用 vLLM、ComfyUI 或 AILab 节点。
-4. 网关保持无 torch；worker 在独立 venv 运行，复用已核实的离线 HF 缓存，不在生成时下载权重。
-5. `qwen3_tts` 的 clone MP3、clone WAV 和 `voiceover` clone 三项真实生成全部通过，全部有正确的编码、采样率、声道和时长。
+4. 网关保持无 torch；worker 在独立隔离环境运行，使用 Confucius 仓库内的离线 `models/hf/`，不在生成时下载权重。
+5. `confucius4_tts` 的 clone MP3、clone WAV 和 `voiceover` clone 三项真实生成全部通过，全部有正确的编码、采样率、声道和时长。
 6. 只有真实验收、health 和完整回归通过后，才允许 `IMPLEMENTED_ROUTES` 加入 `tts` 并勾选 P2。
 
 ## 2. 非目标
@@ -33,12 +33,12 @@
 ## 3. 已确认的决策
 
 1. **后端为基础 Transformers**，通过薄 HTTP wrapper 复用 `confuciustts.cli.inference.ConfuciusTTS`。
-2. **使用现有 HF 缓存**，不重新下载。已核实以下文件存在且非空：
+2. **使用 Confucius 仓库内的 HF 缓存**，不重新下载。运行时必须设置 `HF_HUB_CACHE=<Confucius根>/models/hf`；以下文件已在该目录重新核实存在且非空：
    - `netease-youdao/Confucius4-TTS` 的 `t2s_model.safetensors`、`s2a_model.pt`
    - `facebook/w2v-bert-2.0` 的 `model.safetensors` 与配置
    - `funasr/campplus` 的 `campplus_cn_common.bin`
    - `nvidia/bigvgan_v2_22khz_80band_256x` 的 `bigvgan_generator.pt` 与配置
-3. **独立 worker 进程**：worker 在 `E:/GitHub\_confucius4_tts_venv` 运行，轻量网关继续无 torch。
+3. **独立 worker 进程**：worker 在 `E:/GitHub\_confucius4_tts_venv` 运行；该前缀由已验证的 `confuciustts` conda 环境克隆而来，保留 `torch 2.7.0+cu128`，不从 PyPI 重装 torch，轻量网关继续无 torch。
 4. **不保留 Qwen local 入口**：`qwen3_tts` 只保留 Modal/RunPod；本地只使用新的 Confucius CLI/provider，避免并存两套本地语音后端。
 5. **不需要 `ref_text`**：只传参考音频和语言代码，参考音频就是用户指定的 `voice_02.mp3`。
 6. **批量只解码一次，但逐项 multipart**：不为“只上传一次”改变 Confucius 服务端，也不伪造 reference session。
@@ -131,12 +131,15 @@ worker 的 `POST /api/tts` 只接受 multipart：
 - `ok`：模型加载完成，HTTP 200，`sample_rate=22050`。
 - `error`：加载或初始化失败，HTTP 503，只返回脱敏错误，不回传 traceback。
 
-worker 使用独立的 `E:/GitHub\_confucius4_tts_venv`，复用系统依赖但不修改 miniconda。启动时设置：
+worker 使用独立的 `E:/GitHub\_confucius4_tts_venv`。该隔离前缀通过 `conda create --clone confuciustts` 创建，只向克隆环境补充 FastAPI/uvicorn/python-multipart；不修改 miniconda base 或源 `confuciustts` 环境，不安装其他 CUDA 构建。启动时在任何 Hugging Face/Transformers 导入之前设置：
 
 ```text
+HF_HUB_CACHE=<CONFUCIUS4_TTS_ROOT>/models/hf
 HF_HUB_OFFLINE=1
 TRANSFORMERS_OFFLINE=1
 ```
+
+`models/hf/` 与仓库 `checkpoints/` 必须同时齐全；不回落到用户 home cache，不允许生成时下载。
 
 ccvt 根目录只在缺少 `checkpoints` 时创建到 `E:/GitHub/Confucius4-TTS/checkpoints` 的目录联接，以满足相对路径，不切换解释器工作目录，不修改 Confucius 根目录。`CONFUCIUS4_TTS_ROOT` 仅用于解析代码与配置路径，不作为公开提交值。
 
@@ -308,7 +311,7 @@ tts_backend: { base_url, status, sample_rate }
 
 ### 14.1 素材与进程
 
-参考音频只读：`C:/Users/kenyo/Downloads/Music/voice_02.mp3`，不再传 `ref_text`。启动顺序：先启动 8765 Confucius worker，再启动 8123 gateway。P2 不需要启动 ComfyUI。验收后只停止本次创建的 worker/gateway，不停止已有 9188 进程。
+参考音频只读：`C:/Users/kenyo/Downloads/Music/voice_02.mp3`，不再传 `ref_text`。启动顺序：先启动 8765 Confucius worker，再启动 8123 gateway。P2 不需要启动 ComfyUI。验收前必须核实 `<Confucius根>/models/hf/` 的四组模型与 `<Confucius根>/checkpoints/` 的 tokenizer/统计文件，worker 显式使用 `HF_HUB_CACHE=<Confucius根>/models/hf`，不得依赖旧 home cache。验收后只停止本次创建的 worker/gateway，不停止已有 9188 进程。
 
 ### 14.2 三项真实 clone
 

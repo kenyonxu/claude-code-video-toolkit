@@ -1,5 +1,11 @@
 # Local ComfyUI Provider P2 (Voice Clone) Implementation Plan
 
+> **SUPERSEDED (2026-11-18)：本计划被
+> [2026-11-18-confucius4-tts.md](./2026-11-18-confucius4-tts.md) 取代。TTS 路线改为
+> 独立 Confucius4-TTS worker。旧 Task 9 虽在路线变更后交错完成并产生 `e09ce2c`，
+> 但那是 Qwen ComfyUI 9189 沙箱的验收，不满足新规格，不得作为 Confucius
+> implemented/available 或 P2 勾选依据。本文仅作历史记录，旧路线不得继续执行。**
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the first real generation chain of the local provider: `POST /tts/generate` on the loopback gateway translates a clone-only request into an original `AILab_Qwen3TTSVoiceClone_Advanced` ComfyUI workflow (upload, submit, poll, bounded view, MP3 passthrough / FLAC-to-WAV transcode), and `qwen3_tts.py` / `voiceover.py` reach it end-to-end with model and timeout passthrough, proven by three real clone generations on the acceptance machine.
