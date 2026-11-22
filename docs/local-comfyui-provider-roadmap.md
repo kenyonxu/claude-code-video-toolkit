@@ -172,11 +172,11 @@ done
   - `VISUAL_KINDS` 加 qwen/h3；`normalize_spec()` 分别分配 `images/*.png` 与 `clips/*.mp4`。
   - `_visual_args()` 调用正确 CLI，固定 `--cloud local`，传输出路径、尺寸、seed/steps、H3 帧参数及每场景 `visual.model`，fallback cost 为 0。
   - `_NEEDS` 加三组 local 条目；`missing_for()` 加 qwen/h3 分支，缺 URL 时在 submit 前拒绝。
-  - `host_capabilities()`：`kinds` 加 qwen/h3；`voices["qwen3"]` 必须加 local；`flux` 与 `music` 不变。同步 `presets()["visual_kinds"]`。
-  - `voice.model` 经 `voiceover.py --tts-model` 透传。`visual.provider` 不新增语义，qwen/h3 kind 自身表示 local。
+  - `host_capabilities()`：`kinds` 加 qwen/h3；`voices` 加 `confucius4`（仅 local；`qwen3` 不加 local，保持 Modal/RunPod）；`flux` 与 `music` 不变。同步 `presets()["visual_kinds"]`。
+  - `voice.model` 经 `voiceover.py --tts-model` 透传；confucius4 clone 传 `--cloud local`、`--language zh` 与 `voice.refAudio` 对应的 `--ref-audio`，不传 `--ref-text`/`--speaker`。`visual.provider` 不新增语义，qwen/h3 kind 自身表示 local。
   - H3 的 `run_tool` 外层 timeout 大于 CLI/HTTP timeout；`_STEP_SECONDS` 与 `step_model()` 识别 qwen/h3，避免沿用 FLUX 的约 20 秒 ETA。
-- [ ] 估价与收据：`qwen3 + local` voice、qwen、h3 显式估价为 0；现有 Modal/RunPod 价格不变。更新 `PRICES_VERSION`，统一 estimate、fallback actual、`remaining_estimates()` 与 receipts，local 收据的 `cost_usd` 必须是数值 `0.0`，不是 `null`。
-- [ ] `tools/verify_setup.py` 增加 `--local --json`：只检查四个 LOCAL_*、loopback HTTP URL、`/health`、模型清单及三条路由的 `implemented` 状态，不跑 Modal/RunPod/R2/smoke test。输出 `summary.local.ready`；失败退出 1，成功退出 0。full check 的 voice/summary 也识别 qwen3 local。
+- [ ] 估价与收据：`confucius4 + local` voice、qwen、h3 显式估价为 0；现有 Modal/RunPod 价格不变。更新 `PRICES_VERSION`，统一 estimate、fallback actual、`remaining_estimates()` 与 receipts，local 收据的 `cost_usd` 必须是数值 `0.0`，不是 `null`。
+- [ ] `tools/verify_setup.py` 增加 `--local --json`：只检查四个 LOCAL_*、loopback HTTP URL、`/health`、模型清单及三条路由的 `implemented` 状态，不跑 Modal/RunPod/R2/smoke test。输出 `summary.local.ready`；失败退出 1，成功退出 0。full check 的 voice/summary 也识别 confucius4 local。
 - [ ] 测试隔离：`Isolated.KEYS` 加四个 LOCAL_*，防止开发者 `.env` 污染 bare-host 用例。
 - [ ] 单测：asset 路径、visual args 与 model 透传、`missing_for()`、host/presets、H3 外层 timeout、估价/actual/receipts/resume 均为 0、verify_setup Local-only 退出码；扩展 fake pipeline 覆盖 qwen 与 h3。真实 P5 E2E 不必再次生成 H3，但不能用 fake 取代 P4 的真实 H3 验收。
 - [ ] `.env.example` 登记四条 LOCAL_*；更新 README、`skills/video-toolkit/SKILL.md`、`docs/agent-video-jobs.md`。后者写明 voice.cloud、visual.model、异步 submit/status/result/resume、local 零成本收据与 H3 耗时。
@@ -186,12 +186,12 @@ done
 验收分两层：
 
 1. `uv run tools/verify_setup.py --local --json` 退出 0。
-2. 附录 C 的异步 E2E 命令块退出 0。最小 spec 显式关闭 captions/music、强制 local 背景，包含一幕 qwen 图与一幕 text；断言 estimate/actual/receipts 全为 0、无 R2 URL、MP4 有效。H3 的 job 参数与超时由 fake pipeline 覆盖。
+2. 附录 C 的异步 E2E 命令块退出 0。最小 spec 显式关闭 captions/music、强制 local 背景，voice 为 confucius4 local clone（`lang=zh` + `refAudio`，无 speaker/ref_text/sampling），包含一幕 qwen 图与一幕 text；断言 estimate/actual/receipts 全为 0、无 R2 URL、MP4 有效。H3 的 job 参数与超时由 fake pipeline 覆盖。
 
 ## 决议（设计确认记录）
 
 1. **CLI 旗标沿用仓库惯例**：新工具用 `--input/-i`、`--output/-o`、`--steps`，payload 字段才叫 `num_inference_steps`；视频用 `--num-frames/-n`。
-2. **`host_capabilities()` 按四个枚举 dict 处理**：flux 不变，kinds 加 qwen/h3，voices 的 qwen3 加 local，music 不变。
+2. **`host_capabilities()` 按四个枚举 dict 处理**：flux 不变，kinds 加 qwen/h3，voices 加 `confucius4`（仅 local；qwen3 不加 local），music 不变。
 3. **单测集中纯逻辑与集成边界**：P1 测 cloud_gpu/客户端，P2-P4 测契约翻译，P5 测 video_job 全链路、价格、隔离和 verify_setup。所有单测不碰真网关或真 ComfyUI，真实媒体验收单独执行。
 4. **`start_gateway.bat` 与网关 README 属于 P1**。
 5. **许可证红线贯穿全程**：客户端与 workflow 原创实现，不复制 OpenMontage 代码或第三方 example workflow JSON；可借鉴公开协议与节点连接概念。引入任何素材前先查许可证，提 PR 前自查 diff。
@@ -231,7 +231,7 @@ done
 | H3 尺寸 | `width` + `height` | 32 倍数，默认节点为 1344x768，不继承 LTX2 约束 |
 | quality/steps | `quality`、可选 `num_inference_steps` | quality 选注册表推荐步数，显式 steps 覆盖默认值，响应返回实际步数 |
 
-H3 网格、24 fps 与 `CLIPLoader.type` 已于 2026-11-17 通过本机源码和 `/object_info` 复核；Qwen resolution 语义及 loader 权重清单也已通过运行时元数据复核。旧 TTS 节点复核结论随 Qwen 路线废止。附录 B 文件与 TTS 目录均在文件系统逐项确认。TTS 三项真实 clone 生成已于 2026-11-18 通过（见 P2 验收）；图像与视频仍未运行真实生成。
+H3 网格、24 fps 与 `CLIPLoader.type` 已于 2026-11-17 通过本机源码和 `/object_info` 复核；Qwen resolution 语义及 loader 权重清单也已通过运行时元数据复核。旧 TTS 节点复核结论随 Qwen 路线废止。附录 B 的图像与视频文件已在文件系统逐项确认（旧 Qwen `TTS/Qwen3-TTS/` 目录检查同随 Qwen 路线废止，不再属于附录 B）。2026-11-18 的三项真实 clone 生成属已废止的 Qwen 路线，不构成 Confucius 验收；Confucius4 的 TTS 验收仅为上方 P2 未勾选清单对应的真实验收门。图像与视频仍未运行真实生成。
 
 ## 附录 B：`/health` 模型检查清单
 
@@ -283,7 +283,7 @@ uv run tools/copy_lint.py --diff upstream/main --commits upstream/main \
 
 ## 附录 C：P5 零外部调用 E2E 验收命令块
 
-以下命令在 P5 实现完成后运行。当前仓库尚无 local 实现，今天执行预期会失败，不能据此勾选验收。
+以下命令在 P5 实现完成后运行。P5 尚未实现，今天执行预期会失败，不能据此勾选验收。
 
 ```bash
 set -euo pipefail
@@ -307,11 +307,13 @@ export RUNPOD_API_KEY= RUNPOD_QWEN3_TTS_ENDPOINT_ID= RUNPOD_FLUX2_ENDPOINT_ID=
 
 uv run tools/verify_setup.py --local --json > "$S/verify.json"
 
+# voice.refAudio 指向只读参考音频（Confucius 规格 14.1 素材，按需替换为本机素材路径）；
+# confucius4 local clone 不接受 speaker/ref_text/sampling。
 cat > "$S/spec.json" <<'JSON'
 {
   "title": "Local provider smoke test",
   "format": "16:9",
-  "voice": {"provider": "qwen3", "cloud": "local", "speaker": "Ryan"},
+  "voice": {"provider": "confucius4", "cloud": "local", "lang": "zh", "refAudio": "C:/Users/kenyo/Downloads/Music/voice_02.mp3"},
   "backgrounds": "local",
   "captions": {"enabled": false},
   "music": false,
