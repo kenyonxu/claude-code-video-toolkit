@@ -89,13 +89,13 @@ curl --noproxy '*' --fail-with-body http://127.0.0.1:8123/health
 
 依据 2026-11-18 Confucius4 设计规格（docs/superpowers/specs/2026-11-18-confucius4-tts-design.md）执行。旧 Qwen ComfyUI 路线（AILab 节点、ref_text、SaveAudioAdvanced）已废止；`qwen3_tts` 只保留 Modal/RunPod。
 
-- [ ] 独立 worker（`local-gateway/local_gateway/confucius_worker.py`，端口 8765，隔离环境 `E:/GitHub/_confucius4_tts_venv`，由已验证 `confuciustts` 克隆）：加载一次 `ConfuciusTTS`，`/health` 三态，multipart `/api/tts` 返回 PCM16 mono 22050 Hz WAV；`HF_HUB_CACHE=<Confucius根>/models/hf` + 两个离线变量，不在生成时下载。
-- [ ] 网关 `ConfuciusClient` + `/tts/generate`：仅 `mode=clone`，注册表 `confucius4-tts`，14 语言，`max_batch_items=8`，deadline `270 * max(1, item_count // 3 + 1)`，逐项 multipart、任一失败无部分结果；网关进程无 torch。
-- [ ] 音频：WAV 直通（PCM16/mono/22050 校验）、MP3 用 FFmpeg libmp3lame 真转码，ffprobe 时长 > 0，临时文件 + 原子替换，64/128 MiB 界限。
-- [ ] `tools/confucius4_tts.py`：`--cloud local`、`--model confucius4-tts`、`--lang zh`、`--ref-audio`、`--output`、`--format mp3|wav`、`--timeout 300`；无 ref_text/speaker/instruct/sampling；`cloud_gpu` 的 TTS local 映射只属 `confucius4_tts`。
-- [ ] `tools/voiceover.py`：provider `confucius4` + `--tts-model`（取代 `--qwen-model`）；local 所有 single/batch/scene/brand clone 必须 `--ref-audio`、不要求 `--ref-text`；内置 speaker 与 brand VoiceDesign 在 local 下拒绝；`qwen3 + local` 不可用。
-- [ ] `/health` 新增 `tts_backend: {base_url, status, sample_rate}`；TTS 就绪 = worker ok + 22050 Hz + ffmpeg/ffprobe，独立于 ComfyUI 模型根目录；ComfyUI 可达性和图像/视频节点缺项不阻塞 P2，图像/视频声明文件仍计入 `models_ready`。
-- [ ] 单测：worker/client 契约、请求校验矩阵、批量顺序与上限、deadline/lock、音频管线、CLI/voiceover 透传与提前拒绝、health 聚合。全部 fake 网络。
+- [x] 独立 worker（`local-gateway/local_gateway/confucius_worker.py`，端口 8765，隔离环境 `E:/GitHub/_confucius4_tts_venv`，由已验证 `confuciustts` 克隆）：加载一次 `ConfuciusTTS`，`/health` 三态，multipart `/api/tts` 返回 PCM16 mono 22050 Hz WAV；`HF_HUB_CACHE=<Confucius根>/models/hf` + 两个离线变量，不在生成时下载。
+- [x] 网关 `ConfuciusClient` + `/tts/generate`：仅 `mode=clone`，注册表 `confucius4-tts`，14 语言，`max_batch_items=8`，deadline `270 * max(1, item_count // 3 + 1)`，逐项 multipart、任一失败无部分结果；网关进程无 torch。
+- [x] 音频：WAV 直通（PCM16/mono/22050 校验）、MP3 用 FFmpeg libmp3lame 真转码，ffprobe 时长 > 0，临时文件 + 原子替换，64/128 MiB 界限。
+- [x] `tools/confucius4_tts.py`：`--cloud local`、`--model confucius4-tts`、`--lang zh`、`--ref-audio`、`--output`、`--format mp3|wav`、`--timeout 300`；无 ref_text/speaker/instruct/sampling；`cloud_gpu` 的 TTS local 映射只属 `confucius4_tts`。
+- [x] `tools/voiceover.py`：provider `confucius4` + `--tts-model`（取代 `--qwen-model`）；local 所有 single/batch/scene/brand clone 必须 `--ref-audio`、不要求 `--ref-text`；内置 speaker 与 brand VoiceDesign 在 local 下拒绝；`qwen3 + local` 不可用。
+- [x] `/health` 新增 `tts_backend: {base_url, status, sample_rate}`；TTS 就绪 = worker ok + 22050 Hz + ffmpeg/ffprobe，独立于 ComfyUI 模型根目录；ComfyUI 可达性和图像/视频节点缺项不阻塞 P2，图像/视频声明文件仍计入 `models_ready`。
+- [x] 单测：worker/client 契约、请求校验矩阵、批量顺序与上限、deadline/lock、音频管线、CLI/voiceover 透传与提前拒绝、health 聚合。全部 fake 网络。
 
 验收（三项真实 clone，素材见规格第 14 节；先启动 8765 worker 再启动 8123 gateway，P2 不需要 ComfyUI）：按规格 14.2 执行 `tools/confucius4_tts.py` MP3/WAV 与 `tools/voiceover.py` clone，按 14.3 断言 ffprobe 编码/采样率/声道/时长与 `/health` JSON，并跑双测试域、ruff 与 copy lint。checkbox 只能在三项生成、health 与完整回归全部通过后勾选。
 

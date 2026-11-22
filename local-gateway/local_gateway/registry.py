@@ -140,7 +140,9 @@ ROUTE_TARGETS: dict[str, str] = {
 
 # Routes whose POST endpoint actually works. Confucius4-TTS remains
 # unimplemented until the new spec section 14 acceptance passes.
-IMPLEMENTED_ROUTES: frozenset[str] = frozenset()
+# Flipped after the three real clone generations, /health and the full
+# regression of spec section 14 all passed (see the P2 acceptance notes).
+IMPLEMENTED_ROUTES: frozenset[str] = frozenset({"tts"})
 
 
 def required_nodes() -> tuple[str, ...]:

@@ -65,16 +65,14 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(entry.optional_files,
                          ("vae/minimax_h3_audio_vae_fp32.safetensors",))
 
-    def test_route_targets_and_empty_implemented_set(self):
+    def test_route_targets_and_implemented_tts(self):
         self.assertEqual(registry.ROUTE_TARGETS, {
             "tts": "confucius4-tts",
             "image_generate": "qwen-image-2.1",
             "image_edit": "qwen-image-2.1",
             "video": "minimax-h3-fl2va",
         })
-        # Task 8 (real acceptance) flips this to frozenset({"tts"}) and
-        # updates this assertion in the same commit.
-        self.assertEqual(registry.IMPLEMENTED_ROUTES, frozenset())
+        self.assertEqual(registry.IMPLEMENTED_ROUTES, frozenset({"tts"}))
 
     def test_required_nodes_is_unique_and_has_no_tts_nodes(self):
         nodes = registry.required_nodes()
@@ -253,11 +251,23 @@ class HealthAggregationTests(unittest.TestCase):
             "sample_rate": 22050,
         })
         self.assertEqual(payload["routes"], {
-            "tts": {"implemented": False, "available": False},
+            "tts": {"implemented": True, "available": True},
             "image_generate": {"implemented": False, "available": False},
             "image_edit": {"implemented": False, "available": False},
             "video": {"implemented": False, "available": False},
         })
+
+    def test_tts_route_available_when_implemented(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_model_tree(root)
+            payload, _ = self.payload_for(
+                root, FakeClient(object_info=object_info_fixture()))
+        self.assertEqual(payload["routes"]["tts"],
+                         {"implemented": True, "available": True})
+        for name in ("image_generate", "image_edit", "video"):
+            self.assertEqual(payload["routes"][name],
+                             {"implemented": False, "available": False})
 
     def test_with_comfyui_up_stats_are_reported_and_models_ready(self):
         with tempfile.TemporaryDirectory() as tmp:
