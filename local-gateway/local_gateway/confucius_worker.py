@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import logging
 import os
-import subprocess
+import re
 import sys
 import tempfile
 import threading
@@ -184,27 +185,68 @@ def apply_offline_env(confucius_root: Path | None = None) -> None:
         os.environ["HF_HUB_CACHE"] = str(confucius_root / "models" / "hf")
 
 
-def create_directory_junction(link: Path, target: Path) -> None:
-    """Windows directory junction (no admin rights needed) or a symlink."""
-    if os.name == "nt":
-        result = subprocess.run(
-            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
-            capture_output=True, text=True, errors="replace", shell=False)
-        if result.returncode != 0 or not link.exists():
-            raise RuntimeError(
-                f"mklink /J {link} -> {target} failed:"
-                f" {result.stderr.strip()[:200]}")
-    else:
-        os.symlink(str(target), str(link), target_is_directory=True)
+class ConfigError(Exception):
+    """The upstream inference config no longer has the expected checkpoint
+    lines; the worker refuses to guess where its tokenizer lives."""
 
 
-def ensure_checkpoints_link(ccvt_root: Path, confucius_root: Path) -> None:
-    """Satisfy ./checkpoints relative paths without touching the Confucius
-    checkout or switching the interpreter's working directory."""
-    link = ccvt_root / "checkpoints"
-    if link.exists():
-        return
-    create_directory_junction(link, confucius_root / "checkpoints")
+# Upstream's config locates the tokenizer and the w2v-bert statistics
+# relative to the interpreter's working directory. Only these two keys are
+# rewritten; the checkout itself is never written.
+CHECKPOINT_PATH_KEYS = ("tokenizer_path", "w2v_stat")
+UPSTREAM_CONFIG = ("config", "inference_config.yaml")
+
+
+def _checkpoint_line(key: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"^(?P<indent>[ \t]*){key}:[ \t]*(?P<value>\S+)[ \t]*"
+        rf"(?P<ending>\r?)$")
+
+
+def rewrite_checkpoint_paths(source: str, confucius_root: Path) -> str:
+    """Point the two checkpoint lines of an inference config at the checkout.
+
+    `source` is the text of upstream ``config/inference_config.yaml``. The
+    ``tokenizer_path`` and ``w2v_stat`` values must each be a ``./`` relative
+    path on exactly one line; they become absolute POSIX paths under
+    `confucius_root`, quoted so that any checkout location stays valid YAML.
+    Every other byte is kept. Anything else raises ConfigError, so a changed
+    upstream layout fails at startup instead of loading the wrong files.
+    """
+    root = confucius_root.resolve().as_posix()
+    lines = source.split("\n")
+    for key in CHECKPOINT_PATH_KEYS:
+        pattern = _checkpoint_line(key)
+        hits = [i for i, line in enumerate(lines) if pattern.match(line)]
+        if len(hits) != 1:
+            raise ConfigError(
+                f"upstream inference config must declare {key} on exactly"
+                f" one line; found {len(hits)}")
+        match = pattern.match(lines[hits[0]])
+        value = match.group("value")
+        if not value.startswith("./"):
+            raise ConfigError(
+                f"upstream inference config {key} must be a ./ relative"
+                f" path; got {value}")
+        absolute = f"{root}/{value[2:]}"
+        lines[hits[0]] = (f"{match.group('indent')}{key}:"
+                          f" {json.dumps(absolute)}{match.group('ending')}")
+    return "\n".join(lines)
+
+
+def write_runtime_config(confucius_root: Path, target_dir: Path) -> Path:
+    """Write the rewritten inference config into `target_dir` and return it.
+
+    The checkout is only read; the copy in `target_dir` is what
+    ConfuciusTTS loads.
+    """
+    source_path = confucius_root.joinpath(*UPSTREAM_CONFIG)
+    with open(source_path, encoding="utf-8", newline="") as handle:
+        rewritten = rewrite_checkpoint_paths(handle.read(), confucius_root)
+    target = target_dir / UPSTREAM_CONFIG[-1]
+    with open(target, "w", encoding="utf-8", newline="") as handle:
+        handle.write(rewritten)
+    return target
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -227,19 +269,21 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Error: Confucius4-TTS root not found: {root}", file=sys.stderr)
         sys.exit(2)
     apply_offline_env(root)
-    config_path = root / "config" / "inference_config.yaml"
     sys.path.insert(0, str(root))  # confuciustts + external/ live in the repo
-    try:
-        ensure_checkpoints_link(Path.cwd(), root)
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(2)
+    # The rewritten config lives in a process-temporary directory that is
+    # removed once uvicorn exits; the checkout itself is only ever read.
+    with tempfile.TemporaryDirectory(prefix="ccvt_confucius_") as config_dir:
+        try:
+            config_path = write_runtime_config(root, Path(config_dir))
+        except (OSError, UnicodeError, ConfigError) as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(2)
 
-    state = WorkerState()
-    start_loader(state, config_path, args.device)
-    import uvicorn
+        state = WorkerState()
+        start_loader(state, config_path, args.device)
+        import uvicorn
 
-    uvicorn.run(create_worker_app(state), host=args.host, port=args.port)
+        uvicorn.run(create_worker_app(state), host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@
 Copied verbatim from the spec; every task implicitly includes all of these.
 
 - **Backend:** "后端为基础 Transformers，通过薄 HTTP wrapper 复用 `confuciustts.cli.inference.ConfuciusTTS`"。禁止 vLLM、ComfyUI、AILab 节点、Qwen workflow、Qwen sampling、`model_size`。`local-gateway` 进程无 torch；worker 在 `E:/GitHub/_confucius4_tts_venv`（从已验证 `confuciustts` 环境克隆，保留 cu128），启动在 HF/Transformers 导入前设置 `HF_HUB_CACHE=<CONFUCIUS4_TTS_ROOT>/models/hf`、`HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`，"不在生成时下载权重"，也不回落到用户 home cache。
-- **Worker contract:** 只加载一次 `ConfuciusTTS`（`device="cuda"`，绝对 `config/inference_config.yaml`）；`GET /health` 返回 `status`（`starting` 503 / `ok` 200 `sample_rate=22050` / `error` 503 脱敏无 traceback）；`POST /api/tts` 只收 multipart `text`/`lang`/`reference`，lock 串行 `generate()`，返回 "PCM16、mono、22050 Hz WAV bytes"；参考音频写平台临时目录、请求后删除、不写 Confucius 根目录；"输出明确编码为 PCM16"。
+- **Worker contract:** 只加载一次 `ConfuciusTTS`（`device="cuda"`，`config/inference_config.yaml` 的临时绝对路径副本）；`GET /health` 返回 `status`（`starting` 503 / `ok` 200 `sample_rate=22050` / `error` 503 脱敏无 traceback）；`POST /api/tts` 只收 multipart `text`/`lang`/`reference`，lock 串行 `generate()`，返回 "PCM16、mono、22050 Hz WAV bytes"；参考音频写平台临时目录、请求后删除、不写 Confucius 根目录；"输出明确编码为 PCM16"。
 - **Client:** `ConfuciusClient` "不复用或伪装 `ComfyUIClient`"；`health() -> dict`、`generate(text, lang, reference_bytes, filename, content_type, deadline) -> bytes`；`requests.Session.trust_env=False`，"每次请求独立 Session 并关闭"；短 connect timeout、read timeout 用剩余预算；"POST 不重试"；"单文件最多 64 MiB，所有 item 合计最多 128 MiB"；错误不透传 traceback 或绝对路径。
 - **Error table:** `mode_unsupported` 422, `validation_error` 422, `unknown_model` 422, `external_url_unsupported` 422, `dependency_missing` 503, `tts_backend_unavailable` 503, `tts_backend_timeout` 504, `tts_backend_error` 502, `generation_failed` 500。`comfyui_*` 码不用于 TTS。
 - **Request contract:** 顶层只允许 `model`（缺省 `confucius4-tts`，否则 `unknown_model`）、`text`（必填，"非空字符串或最多 8 项非空字符串数组，每项最多 1024 字符"）、`mode`（缺省 `clone`）、`language`（默认 `zh`，"限 14 个小写代码：`zh/en/ja/ko/de/fr/es/id/it/ms/pt/ru/th/vi`"，标量广播、数组等长）、`output_format`（`mp3` 默认或 `wav`）、`ref_audio_base64`（必填，可带 data-URL，"解码后最大 16 MiB"）；`ref_audio_url`/`r2` → `external_url_unsupported`；`ref_text`/`speaker`/`instruct`/`temperature`/`top_p`/CustomVoice/VoiceDesign → `mode_unsupported`；其他未知字段 → `validation_error`；"严格 base64 解码，data-URL 的 MIME 与 `;base64` 参数必须分离"，一切校验在后端请求前完成。
@@ -32,7 +32,7 @@ Copied verbatim from the spec; every task implicitly includes all of these.
 
 | File | Responsibility |
 |---|---|
-| `local-gateway/local_gateway/confucius_worker.py` (create) | Worker: `ConfuciusTTS` 加载一次、`/health`、multipart `/api/tts`、PCM16 WAV 编码、checkpoints 目录联接、离线环境变量 |
+| `local-gateway/local_gateway/confucius_worker.py` (create) | Worker: `ConfuciusTTS` 加载一次、`/health`、multipart `/api/tts`、PCM16 WAV 编码、临时绝对路径 inference 配置、离线环境变量 |
 | `local-gateway/local_gateway/confucius_client.py` (create) | 网关侧 HTTP 客户端：health、单次 multipart generate、有界二进制响应、错误映射 |
 | `local-gateway/local_gateway/tts.py` (rewrite) | Confucius 请求校验、preflight、deadline 公式、有界 lock、逐项编排、错误表 |
 | `local-gateway/local_gateway/audio.py` (rewrite) | WAV 头校验（PCM16/mono/22050）、WAV 直通、WAV→MP3 libmp3lame、ffprobe、原子替换、字节预算 |
@@ -42,8 +42,7 @@ Copied verbatim from the spec; every task implicitly includes all of these.
 | `local-gateway/local_gateway/server.py` (rewrite) | 分别装配 ComfyUI factory 与 Confucius factory，`/tts/generate` 用后者 |
 | `local-gateway/local_gateway/tts_workflow.py` (delete) | 被 Confucius 路线整体替换 |
 | `local-gateway/local_gateway/workflows/tts_voice_clone.json` (delete) | 旧 Qwen ComfyUI workflow 随路线删除 |
-| `local-gateway/start_confucius_worker.bat` (create) | 用隔离环境启动 8765 worker |
-| `.gitignore` (modify) | 忽略仓库根 `/checkpoints/` 目录联接，防止模型权重入库 |
+| `local-gateway/start_confucius_worker.bat` (create) | 用隔离环境启动 8765 worker（前缀根 `python.exe`，带 `-B`） |
 | `local-gateway/pyproject.toml` (modify) | dev 组加 `python-multipart`（TestClient multipart） |
 | `local-gateway/.env.example` (modify) | 加 `CONFUCIUS4_TTS_BASE_URL` |
 | `local-gateway/tests/test_confucius_worker.py` (create) | worker 契约（fake engine，无 torch） |
@@ -520,11 +519,12 @@ Expected: 两个套件全绿（网关侧尚未改动）。
 
 ### Task 3: Confucius worker and ConfuciusClient
 
+> 2026-11-22 修订：Task 3 完成后，真实验收发现启动器的 `Scripts\python.exe` 路径与 conda 前缀布局不符，且 `checkpoints` 目录联接在验收环境中被拒绝。本任务的启动器、worker 与测试内容已按规格第 6 节改为临时绝对路径配置，不再修改 `.gitignore`。已完成的提交不重写，修订以独立的 `FIX:` 提交落地。
+
 **Files:**
 - Create: `local-gateway/local_gateway/confucius_worker.py`
 - Create: `local-gateway/local_gateway/confucius_client.py`
 - Create: `local-gateway/start_confucius_worker.bat`
-- Modify: `.gitignore`
 - Modify: `local-gateway/pyproject.toml`
 - Test: `local-gateway/tests/test_confucius_worker.py`（create）
 - Test: `local-gateway/tests/test_confucius_client.py`（create）
@@ -533,7 +533,7 @@ Expected: 两个套件全绿（网关侧尚未改动）。
 - Consumes: `fastapi`、`uvicorn`、`requests`（均已在网关依赖内）；`confuciustts.cli.inference.ConfuciusTTS`（仅 worker 隔离环境内惰性导入）。
 - Produces（Task 4 依赖）:
   - `confucius_client.ConfuciusClient(base_url: str, connect_timeout: float = 5.0, max_response_bytes: int = 64MiB)`，方法 `health() -> dict`、`generate(*, text: str, lang: str, reference_bytes: bytes, filename: str, content_type: str, deadline: float) -> bytes`；异常 `confucius_client.ConfuciusError(message, code, details=None)`，code ∈ {`tts_backend_unavailable`, `tts_backend_timeout`, `tts_backend_error`}。
-  - `confucius_worker.create_worker_app(state: WorkerState | None = None) -> FastAPI`；`WorkerState(status, sample_rate, error, engine, lock)`；`pcm16_wav_bytes(pcm: bytes, sample_rate: int) -> bytes`；`LANGUAGES`（14 码元组）；`apply_offline_env(confucius_root: Path | None = None) -> None`；`ensure_checkpoints_link(ccvt_root: Path, confucius_root: Path) -> None`；`create_directory_junction(link: Path, target: Path) -> None`；`main(argv=None) -> None`。
+  - `confucius_worker.create_worker_app(state: WorkerState | None = None) -> FastAPI`；`WorkerState(status, sample_rate, error, engine, lock)`；`pcm16_wav_bytes(pcm: bytes, sample_rate: int) -> bytes`；`LANGUAGES`（14 码元组）；`apply_offline_env(confucius_root: Path | None = None) -> None`；`rewrite_checkpoint_paths(source: str, confucius_root: Path) -> str`；`write_runtime_config(confucius_root: Path, target_dir: Path) -> Path`；`ConfigError`；`CHECKPOINT_PATH_KEYS`；`UPSTREAM_CONFIG`；`main(argv=None) -> None`。
 
 - [ ] **Step 1: dev 依赖加 python-multipart 并写 worker 失败测试**
 
@@ -549,12 +549,14 @@ dev = ["httpx>=0.27", "python-multipart>=0.0.9"]
 创建 `local-gateway/tests/test_confucius_worker.py`：
 
 ```python
-"""confucius_worker: health states, multipart /api/tts, temp cleanup, lock.
+"""confucius_worker: health states, multipart /api/tts, temp cleanup, lock,
+runtime config.
 
     TEMP='E:\\GitHub' TMP='E:\\GitHub' uv run --directory local-gateway python -m unittest discover -s tests -p 'test_confucius_worker.py' -v
 
 No torch anywhere: the engine is a fake and module import must never pull
-ConfuciusTTS (that import lives inside ConfuciusEngine only).
+ConfuciusTTS (that import lives inside ConfuciusEngine only). No real
+checkout either: the runtime-config tests build a fake one in a temp dir.
 """
 from __future__ import annotations
 
@@ -605,6 +607,50 @@ class FakeEngine:
 def ok_state(engine=None):
     return cw.WorkerState(status="ok", sample_rate=22050,
                           engine=engine if engine is not None else FakeEngine())
+
+
+# The relevant lines of upstream config/inference_config.yaml. It locates the
+# tokenizer and the w2v-bert statistics relative to the working directory.
+FAKE_UPSTREAM_CONFIG = """\
+# ===================== Path Configuration =====================
+log_dir:
+
+seed:
+
+paths:
+  tokenizer_path: ./checkpoints
+  w2v_bert_path: facebook/w2v-bert-2.0
+  w2v_stat: ./checkpoints/wav2vec2bert_stats.pt
+
+  style_encoder:
+    target: external.campplus.CAMPPlus
+    init_args:
+      feat_dim: 80
+    checkpoint: campplus_cn_common.bin
+
+  vocoder_path: nvidia/bigvgan_v2_22khz_80band_256x
+  t2s_checkpoint: t2s_model.safetensors
+  s2a_checkpoint: s2a_model.pt
+
+audio:
+  target_sample_rate: 22050
+"""
+TOKENIZER_LINE = 6
+STATS_LINE = 8
+assert FAKE_UPSTREAM_CONFIG.split("\n")[TOKENIZER_LINE].startswith(
+    "  tokenizer_path:"), "fixture line numbers changed"
+assert FAKE_UPSTREAM_CONFIG.split("\n")[STATS_LINE].startswith(
+    "  w2v_stat:"), "fixture line numbers changed"
+
+
+def make_fake_checkout(parent: Path, config: str = FAKE_UPSTREAM_CONFIG) -> Path:
+    """A stand-in for the Confucius4-TTS checkout: only its config exists."""
+    root = parent / "confucius"
+    (root / "checkpoints").mkdir(parents=True)
+    config_path = root.joinpath(*cw.UPSTREAM_CONFIG)
+    config_path.parent.mkdir()
+    config_path.write_bytes(config.encode("utf-8"))
+    return root
 
 
 class Pcm16WavTests(unittest.TestCase):
@@ -744,28 +790,152 @@ class StartupHelperTests(unittest.TestCase):
 
     def test_main_requires_an_explicit_root(self):
         with mock.patch.dict(cw.os.environ, {}, clear=True), \
-                mock.patch.object(cw, "ensure_checkpoints_link",
+                mock.patch.object(cw, "write_runtime_config",
                                   side_effect=AssertionError("no default root")), \
                 mock.patch.object(cw.sys, "stderr", new=io.StringIO()):
             with self.assertRaises(SystemExit) as ctx:
                 cw.main([])
         self.assertEqual(ctx.exception.code, 2)
 
-    def test_ensure_checkpoints_link_skips_existing_and_creates_missing(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            ccvt_root = Path(tmp) / "repo"
-            confucius_root = Path(tmp) / "confucius"
-            ccvt_root.mkdir()
-            (confucius_root / "checkpoints").mkdir(parents=True)
-            cw.ensure_checkpoints_link(ccvt_root, confucius_root)  # creates
-            self.assertTrue((ccvt_root / "checkpoints").exists())
-            with mock.patch.object(
-                    cw, "create_directory_junction",
-                    side_effect=AssertionError("must not run again")):
-                cw.ensure_checkpoints_link(ccvt_root, confucius_root)
+    def test_languages_are_the_fourteen_lower_case_codes(self):
         self.assertEqual(cw.LANGUAGES, ("zh", "en", "ja", "ko", "de", "fr",
                                         "es", "id", "it", "ms", "pt", "ru",
                                         "th", "vi"))
+
+    def test_runtime_config_rewrites_exactly_the_two_checkpoint_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_fake_checkout(Path(tmp))
+            source = root.joinpath(*cw.UPSTREAM_CONFIG)
+            before, before_mtime = source.read_bytes(), source.stat().st_mtime_ns
+            target_dir = Path(tmp) / "runtime"
+            target_dir.mkdir()
+
+            generated = cw.write_runtime_config(root, target_dir)
+
+            self.assertEqual(generated, target_dir / "inference_config.yaml")
+            old = FAKE_UPSTREAM_CONFIG.split("\n")
+            new = generated.read_bytes().decode("utf-8").split("\n")
+            self.assertEqual(len(new), len(old))
+            changed = [i for i, (a, b) in enumerate(zip(old, new)) if a != b]
+            self.assertEqual(changed, [TOKENIZER_LINE, STATS_LINE])
+            absolute = root.resolve().as_posix()
+            self.assertEqual(new[TOKENIZER_LINE],
+                             f'  tokenizer_path: "{absolute}/checkpoints"')
+            self.assertEqual(new[STATS_LINE], f'  w2v_stat: "'
+                             f'{absolute}/checkpoints/wav2vec2bert_stats.pt"')
+            # The upstream config and its directory are exactly as they were.
+            self.assertEqual(source.read_bytes(), before)
+            self.assertEqual(source.stat().st_mtime_ns, before_mtime)
+            self.assertEqual([p.name for p in source.parent.iterdir()],
+                             ["inference_config.yaml"])
+
+    def test_runtime_config_keeps_the_source_line_endings(self):
+        crlf = FAKE_UPSTREAM_CONFIG.replace("\n", "\r\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_fake_checkout(Path(tmp), crlf)
+            target_dir = Path(tmp) / "runtime"
+            target_dir.mkdir()
+
+            generated = cw.write_runtime_config(root, target_dir)
+
+            lines = generated.read_bytes().split(b"\n")
+            self.assertEqual(lines[-1], b"")
+            self.assertTrue(all(line.endswith(b"\r") for line in lines[:-1]))
+            self.assertTrue(lines[TOKENIZER_LINE].startswith(
+                b'  tokenizer_path: "'))
+            self.assertTrue(lines[STATS_LINE].startswith(b'  w2v_stat: "'))
+
+    def test_runtime_config_paths_are_absolute_and_normalized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            make_fake_checkout(Path(tmp))
+            unnormalized = Path(tmp) / "confucius" / ".." / "confucius"
+            self.assertIn("..", unnormalized.parts)
+            target_dir = Path(tmp) / "runtime"
+            target_dir.mkdir()
+
+            generated = cw.write_runtime_config(unnormalized, target_dir)
+
+            text = generated.read_text(encoding="utf-8")
+            expected = (Path(tmp) / "confucius").resolve().as_posix()
+            self.assertIn(f'  tokenizer_path: "{expected}/checkpoints"', text)
+            self.assertNotIn("..", text)
+
+    def test_runtime_config_fails_closed_when_the_layout_changed(self):
+        broken = {
+            "missing stats": FAKE_UPSTREAM_CONFIG.replace(
+                "  w2v_stat: ./checkpoints/wav2vec2bert_stats.pt\n", ""),
+            "duplicate tokenizer": FAKE_UPSTREAM_CONFIG.replace(
+                "  tokenizer_path: ./checkpoints\n",
+                "  tokenizer_path: ./checkpoints\n  tokenizer_path: ./other\n"),
+            "tokenizer not ./ relative": FAKE_UPSTREAM_CONFIG.replace(
+                "tokenizer_path: ./checkpoints", "tokenizer_path: checkpoints"),
+            "stats not ./ relative": FAKE_UPSTREAM_CONFIG.replace(
+                "w2v_stat: ./checkpoints/wav2vec2bert_stats.pt",
+                "w2v_stat: checkpoints/wav2vec2bert_stats.pt"),
+        }
+        for label, config in broken.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                root = make_fake_checkout(Path(tmp), config)
+                target_dir = Path(tmp) / "runtime"
+                target_dir.mkdir()
+
+                with self.assertRaises(cw.ConfigError):
+                    cw.write_runtime_config(root, target_dir)
+
+                self.assertEqual(list(target_dir.iterdir()), [])  # not written
+
+    def test_main_keeps_the_temp_config_until_uvicorn_exits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = make_fake_checkout(Path(tmp))
+            seen = {}
+
+            def fake_run(app, host, port):
+                seen["bind"] = (host, port)
+                seen["config"] = loader.call_args.args[1]
+                seen["exists_while_serving"] = seen["config"].exists()
+                seen["text"] = seen["config"].read_text(encoding="utf-8")
+                seen["hf_cache"] = cw.os.environ.get("HF_HUB_CACHE")
+
+            self.addCleanup(setattr, sys, "path", list(sys.path))
+            with mock.patch.dict(cw.os.environ, {"TEMP": tmp, "TMP": tmp},
+                                 clear=True), \
+                    mock.patch.object(cw, "start_loader") as loader, \
+                    mock.patch("uvicorn.run", side_effect=fake_run):
+                cw.main(["--root", str(root), "--host", "127.0.0.1",
+                         "--port", "8765"])
+
+            self.assertEqual(seen["bind"], ("127.0.0.1", 8765))
+            self.assertEqual(loader.call_count, 1)
+            state, config_path, device = loader.call_args.args
+            self.assertEqual((state.status, device), ("starting", "cuda"))
+            self.assertTrue(seen["exists_while_serving"])
+            self.assertIn(f'  tokenizer_path: "'
+                          f'{root.resolve().as_posix()}/checkpoints"',
+                          seen["text"])
+            self.assertEqual(seen["hf_cache"], str(root / "models" / "hf"))
+            # uvicorn has exited: the temporary config and its directory are gone.
+            self.assertFalse(config_path.exists())
+            self.assertFalse(config_path.parent.exists())
+            self.assertEqual([p.name for p in Path(tmp).iterdir()],
+                             ["confucius"])
+
+    def test_main_exits_2_when_the_upstream_config_is_unusable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "confucius"
+            root.mkdir()  # no config/inference_config.yaml at all
+            err = io.StringIO()
+            self.addCleanup(setattr, sys, "path", list(sys.path))
+            with mock.patch.dict(cw.os.environ, {"TEMP": tmp, "TMP": tmp},
+                                 clear=True), \
+                    mock.patch.object(cw, "start_loader") as loader, \
+                    mock.patch.object(cw.sys, "stderr", new=err):
+                with self.assertRaises(SystemExit) as ctx:
+                    cw.main(["--root", str(root)])
+            self.assertEqual(ctx.exception.code, 2)
+            self.assertIn("Error:", err.getvalue())
+            loader.assert_not_called()
+            self.assertEqual([p.name for p in Path(tmp).iterdir()],
+                             ["confucius"])
 
 
 if __name__ == "__main__":
@@ -802,9 +972,10 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import logging
 import os
-import subprocess
+import re
 import sys
 import tempfile
 import threading
@@ -971,27 +1142,68 @@ def apply_offline_env(confucius_root: Path | None = None) -> None:
         os.environ["HF_HUB_CACHE"] = str(confucius_root / "models" / "hf")
 
 
-def create_directory_junction(link: Path, target: Path) -> None:
-    """Windows directory junction (no admin rights needed) or a symlink."""
-    if os.name == "nt":
-        result = subprocess.run(
-            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
-            capture_output=True, text=True, shell=False)
-        if result.returncode != 0 or not link.exists():
-            raise RuntimeError(
-                f"mklink /J {link} -> {target} failed:"
-                f" {result.stderr.strip()[:200]}")
-    else:
-        os.symlink(str(target), str(link), target_is_directory=True)
+class ConfigError(Exception):
+    """The upstream inference config no longer has the expected checkpoint
+    lines; the worker refuses to guess where its tokenizer lives."""
 
 
-def ensure_checkpoints_link(ccvt_root: Path, confucius_root: Path) -> None:
-    """Satisfy ./checkpoints relative paths without touching the Confucius
-    checkout or switching the interpreter's working directory."""
-    link = ccvt_root / "checkpoints"
-    if link.exists():
-        return
-    create_directory_junction(link, confucius_root / "checkpoints")
+# Upstream's config locates the tokenizer and the w2v-bert statistics
+# relative to the interpreter's working directory. Only these two keys are
+# rewritten; the checkout itself is never written.
+CHECKPOINT_PATH_KEYS = ("tokenizer_path", "w2v_stat")
+UPSTREAM_CONFIG = ("config", "inference_config.yaml")
+
+
+def _checkpoint_line(key: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"^(?P<indent>[ \t]*){key}:[ \t]*(?P<value>\S+)[ \t]*"
+        rf"(?P<ending>\r?)$")
+
+
+def rewrite_checkpoint_paths(source: str, confucius_root: Path) -> str:
+    """Point the two checkpoint lines of an inference config at the checkout.
+
+    `source` is the text of upstream ``config/inference_config.yaml``. The
+    ``tokenizer_path`` and ``w2v_stat`` values must each be a ``./`` relative
+    path on exactly one line; they become absolute POSIX paths under
+    `confucius_root`, quoted so that any checkout location stays valid YAML.
+    Every other byte is kept. Anything else raises ConfigError, so a changed
+    upstream layout fails at startup instead of loading the wrong files.
+    """
+    root = confucius_root.resolve().as_posix()
+    lines = source.split("\n")
+    for key in CHECKPOINT_PATH_KEYS:
+        pattern = _checkpoint_line(key)
+        hits = [i for i, line in enumerate(lines) if pattern.match(line)]
+        if len(hits) != 1:
+            raise ConfigError(
+                f"upstream inference config must declare {key} on exactly"
+                f" one line; found {len(hits)}")
+        match = pattern.match(lines[hits[0]])
+        value = match.group("value")
+        if not value.startswith("./"):
+            raise ConfigError(
+                f"upstream inference config {key} must be a ./ relative"
+                f" path; got {value}")
+        absolute = f"{root}/{value[2:]}"
+        lines[hits[0]] = (f"{match.group('indent')}{key}:"
+                          f" {json.dumps(absolute)}{match.group('ending')}")
+    return "\n".join(lines)
+
+
+def write_runtime_config(confucius_root: Path, target_dir: Path) -> Path:
+    """Write the rewritten inference config into `target_dir` and return it.
+
+    The checkout is only read; the copy in `target_dir` is what
+    ConfuciusTTS loads.
+    """
+    source_path = confucius_root.joinpath(*UPSTREAM_CONFIG)
+    with open(source_path, encoding="utf-8", newline="") as handle:
+        rewritten = rewrite_checkpoint_paths(handle.read(), confucius_root)
+    target = target_dir / UPSTREAM_CONFIG[-1]
+    with open(target, "w", encoding="utf-8", newline="") as handle:
+        handle.write(rewritten)
+    return target
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -1014,19 +1226,21 @@ def main(argv: list[str] | None = None) -> None:
         print(f"Error: Confucius4-TTS root not found: {root}", file=sys.stderr)
         sys.exit(2)
     apply_offline_env(root)
-    config_path = root / "config" / "inference_config.yaml"
     sys.path.insert(0, str(root))  # confuciustts + external/ live in the repo
-    try:
-        ensure_checkpoints_link(Path.cwd(), root)
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(2)
+    # The rewritten config lives in a process-temporary directory that is
+    # removed once uvicorn exits; the checkout itself is only ever read.
+    with tempfile.TemporaryDirectory(prefix="ccvt_confucius_") as config_dir:
+        try:
+            config_path = write_runtime_config(root, Path(config_dir))
+        except (OSError, UnicodeError, ConfigError) as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(2)
 
-    state = WorkerState()
-    start_loader(state, config_path, args.device)
-    import uvicorn
+        state = WorkerState()
+        start_loader(state, config_path, args.device)
+        import uvicorn
 
-    uvicorn.run(create_worker_app(state), host=args.host, port=args.port)
+        uvicorn.run(create_worker_app(state), host=args.host, port=args.port)
 
 
 if __name__ == "__main__":
@@ -1476,25 +1690,20 @@ Expected: PASS。
 ```bat
 @echo off
 rem Start the Confucius4-TTS worker on loopback 8765 in its isolated env.
-rem E:\GitHub\_confucius4_tts_venv is cloned from the validated confuciustts
-rem conda env and holds torch 2.7.0+cu128/transformers;
-rem the gateway process itself never imports them. The worker resolves
-rem ./checkpoints relative to the working directory, so launch it from the
-rem repo root (the launcher picks the cwd once; the worker never chdirs).
+rem E:\GitHub\_confucius4_tts_venv is a conda prefix cloned from the validated
+rem confuciustts env and holds torch 2.7.0+cu128/transformers; its python.exe
+rem sits at the prefix root. The gateway process itself never imports them.
+rem The worker only reads the checkout: it loads a temporary copy of the
+rem upstream inference config with absolute checkpoint paths, so it needs no
+rem junction and no particular working directory. -B keeps imports from
+rem writing __pycache__ into the checkout.
 cd /d "%~dp0.."
 if not defined CONFUCIUS4_TTS_ROOT (
   echo Error: set CONFUCIUS4_TTS_ROOT to your local Confucius4-TTS checkout. 1>&2
   exit /b 2
 )
 rem The checkout path is process-local configuration, never a committed default.
-"E:\GitHub\_confucius4_tts_venv\python.exe" "%~dp0local_gateway\confucius_worker.py" --root "%CONFUCIUS4_TTS_ROOT%" --host 127.0.0.1 --port 8765
-```
-
-在根 `.gitignore` 的 `scratch/` 规则后追加，防止目录联接后的权重被 `git add -A` 捕获：
-
-```gitignore
-# Confucius4-TTS relative checkpoint junction (local model weights)
-/checkpoints/
+"E:\GitHub\_confucius4_tts_venv\python.exe" -B "%~dp0local_gateway\confucius_worker.py" --root "%CONFUCIUS4_TTS_ROOT%" --host 127.0.0.1 --port 8765
 ```
 
 - [ ] **Step 10: 全网关回归、lint、提交**
@@ -1504,7 +1713,7 @@ TEMP='E:\GitHub' TMP='E:\GitHub' uv run --directory local-gateway python -m unit
 uvx ruff check --select F821,F811,F822,F823 scripts/ tools/ local-gateway/
 git add local-gateway/local_gateway/confucius_worker.py \
   local-gateway/local_gateway/confucius_client.py \
-  local-gateway/start_confucius_worker.bat .gitignore \
+  local-gateway/start_confucius_worker.bat \
   local-gateway/pyproject.toml local-gateway/uv.lock \
   local-gateway/tests/test_confucius_worker.py \
   local-gateway/tests/test_confucius_client.py

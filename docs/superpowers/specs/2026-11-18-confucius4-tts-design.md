@@ -119,7 +119,7 @@ worker 的 `POST /api/tts` 只接受 multipart：
 
 `confucius_worker.py` 只包含以下职责：
 
-- 启动时从绝对 `config/inference_config.yaml` 创建一次 `ConfuciusTTS`，`device="cuda"`。
+- 启动时从 `config/inference_config.yaml` 的临时绝对路径副本创建一次 `ConfuciusTTS`，`device="cuda"`（副本见本节下文）。
 - `GET /health` 返回 `status` 和 `sample_rate`。
 - `POST /api/tts` 以 lock 串行执行基础 `generate()`，返回 PCM16、mono、22050 Hz WAV bytes。
 - 上传的参考音频写入平台临时目录，请求完成后删除，不写 Confucius 根目录。
@@ -141,7 +141,7 @@ TRANSFORMERS_OFFLINE=1
 
 `models/hf/` 与仓库 `checkpoints/` 必须同时齐全；不回落到用户 home cache，不允许生成时下载。
 
-ccvt 根目录只在缺少 `checkpoints` 时创建到 `E:/GitHub/Confucius4-TTS/checkpoints` 的目录联接，以满足相对路径，不切换解释器工作目录，不修改 Confucius 根目录。`CONFUCIUS4_TTS_ROOT` 仅用于解析代码与配置路径，不作为公开提交值。
+上游 `config/inference_config.yaml` 用 `./checkpoints` 相对路径定位 tokenizer 与 w2v-bert 统计文件。worker 读取该配置，只把 `paths.tokenizer_path` 与 `paths.w2v_stat` 两行改写为 `<CONFUCIUS4_TTS_ROOT>/checkpoints/...` 的绝对路径（POSIX 分隔符），写入进程临时目录中的副本并交给 `ConfuciusTTS`；副本保留到 uvicorn 退出后清理。两键各须恰好出现一次且取值须为 `./` 相对路径，否则启动即失败，不猜测 tokenizer 位置。（2026-11-22 修订：原设计在 ccvt 根目录创建指向 `E:/GitHub/Confucius4-TTS/checkpoints` 的目录联接，真实验收时该联接在执行环境中被拒绝，且会形成指向模型目录的可写别名，故废止。）上游配置与 Confucius 根目录全程只读：不创建目录联接，不切换解释器工作目录，启动器以 `-B` 运行以免导入向 checkout 写入 `__pycache__`。`CONFUCIUS4_TTS_ROOT` 仅用于解析代码与配置路径，不作为公开提交值。
 
 ## 7. ConfuciusClient 与错误映射
 
@@ -271,6 +271,7 @@ tts_backend: { base_url, status, sample_rate }
 - 启动状态、ok/error 健康检查、模型加载失败脱敏
 - multipart 文本、语言、参考音频、输出 PCM16/mono/22050 Hz
 - 语言/大小限制、离线环境变量、lock
+- 临时 inference 配置：只改写两行 checkpoint 路径、上游配置文件保持不变、上游布局变化即失败且不落盘、副本保留到 uvicorn 退出后清理
 - 有界二进制响应、timeout/HTTP/非 WAV 错误、无代理、无重试、无凭据泄漏
 
 ### 12.2 网关编排与音频

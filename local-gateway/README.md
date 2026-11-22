@@ -26,6 +26,14 @@ later phases.
    offline Hugging Face cache at `models/hf`; the gateway
    process itself never imports torch. P2 does not need ComfyUI running.
 
+   The prefix is a conda environment, so its interpreter is
+   `E:\GitHub\_confucius4_tts_venv\python.exe`. The worker only reads the
+   checkout: it loads a temporary copy of the upstream inference config whose
+   `tokenizer_path` and `w2v_stat` lines point at
+   `<CONFUCIUS4_TTS_ROOT>/checkpoints`. It therefore needs no junction and
+   no particular working directory, and the launcher passes `-B` so that
+   imports write no bytecode into the checkout.
+
 2. Then start the gateway:
 
    ```bat
