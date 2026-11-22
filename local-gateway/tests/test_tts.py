@@ -265,6 +265,22 @@ class PreflightTests(WavMixin, unittest.TestCase):
                 tts.preflight(self.settings(), lambda url: client)
         self.assertEqual(ctx.exception.code, "tts_backend_unavailable")
 
+    def test_invalid_worker_url_is_unavailable_before_any_client(self):
+        def never(url):
+            raise AssertionError(
+                "preflight must not dial an invalid worker URL")
+
+        settings = config.load_settings(env={
+            "COMFYUI_MODELS_ROOT": "C:/x",
+            "CONFUCIUS4_TTS_BASE_URL": "http://10.0.0.5:8765"})
+        self.assertFalse(settings.tts_worker_url_valid)
+        with mock.patch("shutil.which", return_value="/fake/ffmpeg"):
+            with self.assertRaises(tts.TTSRouteError) as ctx:
+                tts.preflight(settings, never)
+        self.assertEqual(ctx.exception.code, "tts_backend_unavailable")
+        self.assertEqual(ctx.exception.http_status, 503)
+        self.assertIn("CONFUCIUS4_TTS_BASE_URL", ctx.exception.message)
+
     def test_ok_worker_passes(self):
         with mock.patch("shutil.which", return_value="/fake/ffmpeg"):
             tts.preflight(self.settings(),

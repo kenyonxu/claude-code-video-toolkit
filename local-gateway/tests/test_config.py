@@ -140,6 +140,16 @@ class TtsWorkerUrlTests(unittest.TestCase):
         self.assertIn("CONFUCIUS4_TTS_BASE_URL",
                       " ".join(e.message for e in settings.errors))
 
+    def test_worker_url_valid_property(self):
+        settings = config.load_settings(env=self.env())
+        self.assertTrue(settings.tts_worker_url_valid)
+        settings = config.load_settings(env=self.env(
+            CONFUCIUS4_TTS_BASE_URL="http://10.0.0.5:8765"))
+        self.assertFalse(settings.tts_worker_url_valid)
+        settings = config.load_settings(env=self.env(
+            CONFUCIUS4_TTS_BASE_URL="http://localhost:8765"))
+        self.assertTrue(settings.tts_worker_url_valid)
+
 
 if __name__ == "__main__":
     unittest.main()

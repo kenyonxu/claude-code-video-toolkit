@@ -330,6 +330,30 @@ class HealthAggregationTests(unittest.TestCase):
         self.assertEqual(payload["tts_backend"]["base_url"],
                          "http://127.0.0.1:9999")
 
+    def test_invalid_worker_url_is_never_dialed(self):
+        def never(url):
+            raise AssertionError(
+                "an invalid CONFUCIUS4_TTS_BASE_URL must not be dialed")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_model_tree(root, optional_audio_vae=True)
+            payload, status = health.build_health_payload(
+                self.settings_for(root, worker_url="http://10.0.0.5:8765"),
+                lambda url: FakeClient(object_info=object_info_fixture()),
+                never)
+        self.assertEqual(status, 503)
+        self.assertFalse(payload["ready"])
+        self.assertFalse(payload["models_ready"])
+        self.assertFalse(payload["models"]["confucius4-tts"]["ready"])
+        self.assertEqual(payload["tts_backend"], {
+            "base_url": "http://10.0.0.5:8765",
+            "status": "unreachable",
+            "sample_rate": None,
+        })
+        self.assertIn("config_invalid",
+                      [e["code"] for e in payload["errors"]])
+
     def test_missing_video_files_report_relative_paths_and_503(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

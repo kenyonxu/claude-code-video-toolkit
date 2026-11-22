@@ -235,6 +235,14 @@ def preflight(settings: GatewaySettings, tts_client_factory) -> None:
         raise _dependency(
             "voice clone needs ffmpeg and ffprobe on this gateway process's"
             f" PATH; missing: {', '.join(missing_tools)}")
+    if not settings.tts_worker_url_valid:
+        # A non-loopback/invalid CONFUCIUS4_TTS_BASE_URL must never receive
+        # a health probe or a clone POST carrying reference audio.
+        raise TTSRouteError(
+            "CONFUCIUS4_TTS_BASE_URL is not a valid http loopback URL like"
+            f" http://127.0.0.1:8765; got {settings.tts_worker_url!r}."
+            " Fix CONFUCIUS4_TTS_BASE_URL in local-gateway/.env before"
+            " cloning.", "tts_backend_unavailable")
     try:
         payload = tts_client_factory(settings.tts_worker_url).health()
     except ConfuciusError as e:

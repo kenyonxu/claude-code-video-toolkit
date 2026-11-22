@@ -48,6 +48,10 @@ class GatewaySettings:
     def config_valid(self) -> bool:
         return not self.errors
 
+    @property
+    def tts_worker_url_valid(self) -> bool:
+        return _base_url_ok(self.tts_worker_url)
+
 
 def _base_url_ok(base_url: str) -> bool:
     parts = urlsplit(base_url)

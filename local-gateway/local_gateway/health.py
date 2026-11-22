@@ -230,30 +230,35 @@ def _build(settings: GatewaySettings,
 
     tts_backend = {"base_url": settings.tts_worker_url,
                    "status": "unreachable", "sample_rate": None}
-    try:
-        tts_health = tts_client_factory(settings.tts_worker_url).health()
-        tts_backend["status"] = str(tts_health.get("status"))
-        sample_rate = tts_health.get("sample_rate")
-        tts_backend["sample_rate"] = (sample_rate
-                                      if isinstance(sample_rate, int)
-                                      else None)
-        if (tts_backend["status"] != "ok"
-                or tts_backend["sample_rate"] != 22050):
+    if settings.tts_worker_url_valid:
+        try:
+            tts_health = tts_client_factory(
+                settings.tts_worker_url).health()
+            tts_backend["status"] = str(tts_health.get("status"))
+            sample_rate = tts_health.get("sample_rate")
+            tts_backend["sample_rate"] = (sample_rate
+                                          if isinstance(sample_rate, int)
+                                          else None)
+            if (tts_backend["status"] != "ok"
+                    or tts_backend["sample_rate"] != 22050):
+                errors.append(_err(
+                    "tts_backend_unavailable", "tts_backend",
+                    "Confucius4-TTS worker /health must report status=ok and"
+                    f" sample_rate=22050; got {tts_backend!r}.",
+                    "Wait for the worker to finish loading and verify its"
+                    " inference config uses a 22050 Hz target sample rate.",
+                ))
+        except ConfuciusError as e:
             errors.append(_err(
-                "tts_backend_unavailable", "tts_backend",
-                "Confucius4-TTS worker /health must report status=ok and"
-                f" sample_rate=22050; got {tts_backend!r}.",
-                "Wait for the worker to finish loading and verify its"
-                " inference config uses a 22050 Hz target sample rate.",
+                e.code, "tts_backend",
+                f"Confucius4-TTS worker is not serving clones: {e.message}",
+                "Start the worker with local-gateway/start_confucius_worker.bat"
+                " (127.0.0.1:8765), wait for its /health to report ok, then"
+                " re-check this endpoint.",
             ))
-    except ConfuciusError as e:
-        errors.append(_err(
-            e.code, "tts_backend",
-            f"Confucius4-TTS worker is not serving clones: {e.message}",
-            "Start the worker with local-gateway/start_confucius_worker.bat"
-            " (127.0.0.1:8765), wait for its /health to report ok, then"
-            " re-check this endpoint.",
-        ))
+    # An invalid CONFUCIUS4_TTS_BASE_URL (already reported as a config
+    # error above) must never be dialed: the worker stays "unreachable"
+    # and the TTS model stays not ready.
 
     models: dict[str, dict] = {}
     for entry in registry.MODEL_ENTRIES:
