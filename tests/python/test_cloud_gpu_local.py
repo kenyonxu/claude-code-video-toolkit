@@ -48,7 +48,7 @@ def local_env(**values):
 class ProviderConfigTests(unittest.TestCase):
     def test_local_env_var_mapping_is_the_four_capability_urls(self):
         self.assertEqual(cg._LOCAL_ENV_VARS, {
-            "qwen3_tts": "LOCAL_TTS_ENDPOINT_URL",
+            "confucius4_tts": "LOCAL_TTS_ENDPOINT_URL",
             "qwen_image": "LOCAL_IMAGE_ENDPOINT_URL",
             "image_edit": "LOCAL_IMAGE_EDIT_ENDPOINT_URL",
             "h3_video": "LOCAL_VIDEO_ENDPOINT_URL",
@@ -62,7 +62,7 @@ class ProviderConfigTests(unittest.TestCase):
 
     def test_local_config_is_none_when_env_missing(self):
         with local_env():
-            self.assertEqual(cg.get_provider_config("local", "qwen3_tts"),
+            self.assertEqual(cg.get_provider_config("local", "confucius4_tts"),
                              {"endpoint_url": None})
 
     def test_local_config_is_none_for_unregistered_tool(self):
@@ -148,7 +148,7 @@ class FakeProgress:
         yield
 
 
-def run_local(session, endpoint_url, tool_name="qwen3_tts", payload=None,
+def run_local(session, endpoint_url, tool_name="confucius4_tts", payload=None,
               timeout=600, progress=None):
     with mock.patch.object(cg.requests, "Session", return_value=session):
         return cg._call_local(
@@ -203,8 +203,8 @@ class LocalTransportTests(unittest.TestCase):
 
     def test_missing_url_error_names_tool_and_env_var_before_any_request(self):
         session = FakeSession(response=FakeResponse(json_data={}))
-        result, elapsed = run_local(session, None, tool_name="qwen3_tts")
-        self.assertIn("qwen3_tts", result["error"])
+        result, elapsed = run_local(session, None, tool_name="confucius4_tts")
+        self.assertIn("confucius4_tts", result["error"])
         self.assertIn("LOCAL_TTS_ENDPOINT_URL", result["error"])
         self.assertEqual(elapsed, 0)
         self.assertEqual(session.post_calls, [])
@@ -240,11 +240,11 @@ class LocalTransportTests(unittest.TestCase):
                 self.assertEqual(elapsed, 0)
                 self.assertEqual(session.post_calls, [])
 
-    def test_connection_failure_mentions_comfyui_and_start_script(self):
+    def test_connection_failure_mentions_worker_and_start_scripts(self):
         session = FakeSession(exc=requests.exceptions.ConnectionError("connection refused"))
         result, _ = run_local(session, self.url)
         self.assertIn("start_gateway.bat", result["error"])
-        self.assertIn("ComfyUI", result["error"])
+        self.assertIn("start_confucius_worker.bat", result["error"])
 
     def test_timeout_returns_error_dict_not_exception(self):
         session = FakeSession(exc=requests.exceptions.ReadTimeout("read timed out"))
@@ -300,7 +300,7 @@ class LocalDispatchTests(unittest.TestCase):
         with local_env(LOCAL_TTS_ENDPOINT_URL=self.tts_url):
             with mock.patch.object(cg.requests, "Session", return_value=session):
                 result, _ = cg.call_cloud_endpoint(
-                    "local", {"input": {"text": "hi"}}, "qwen3_tts",
+                    "local", {"input": {"text": "hi"}}, "confucius4_tts",
                     timeout=100, progress=progress, verbose=False)
         self.assertEqual(result, {"success": True})
         sent_url, kwargs = session.post_calls[0]

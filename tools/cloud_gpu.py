@@ -7,7 +7,7 @@ handles submission, polling, timeout, and cancellation for the chosen provider.
 Supported providers:
 - runpod: RunPod serverless endpoints (existing)
 - modal: Modal web endpoints (existing)
-- local: loopback local-gateway endpoints backed by local ComfyUI (new)
+- local: loopback local-gateway endpoints backed by local worker/ComfyUI capabilities
 """
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ _MODAL_ENV_VARS = {
 }
 
 _LOCAL_ENV_VARS = {
-    "qwen3_tts": "LOCAL_TTS_ENDPOINT_URL",
+    "confucius4_tts": "LOCAL_TTS_ENDPOINT_URL",
     "qwen_image": "LOCAL_IMAGE_ENDPOINT_URL",
     "image_edit": "LOCAL_IMAGE_EDIT_ENDPOINT_URL",
     "h3_video": "LOCAL_VIDEO_ENDPOINT_URL",
@@ -606,8 +606,9 @@ def _call_modal(
 # The local gateway is loopback-only, so a connection failure almost always
 # means "not started yet": point at the two start steps instead of Modal hints.
 _LOCAL_GATEWAY_HINT = (
-    " Is the local gateway running? Start ComfyUI (127.0.0.1:9188) first,"
-    " then run local-gateway/start_gateway.bat."
+    " Is the local stack running? Start the Confucius4-TTS worker"
+    " (local-gateway/start_confucius_worker.bat, 127.0.0.1:8765) first,"
+    " then the gateway (local-gateway/start_gateway.bat, 127.0.0.1:8123)."
 )
 
 _LOCAL_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
@@ -668,7 +669,7 @@ def _call_local(
     Mirrors _call_modal's synchronous shape with local rules: loopback HTTP
     only, no credentials, one requests.Session per call with trust_env=False,
     a single POST (no retry) and a (5, timeout + 30) connect/read timeout.
-    The read timeout is not a total deadline for the ComfyUI job behind the
+    The read timeout is not a total deadline for the backend job behind the
     gateway: when this client gives up, the gateway-side task keeps running;
     this call never cancels it.
     """
@@ -717,7 +718,7 @@ def _call_local(
     except requests.exceptions.Timeout:
         elapsed = time.time() - start
         msg = (f"Local gateway request timed out after {elapsed:.0f}s."
-               f" The ComfyUI job was not cancelled and may still finish.{_LOCAL_GATEWAY_HINT}")
+               f" The backend job was not cancelled and may still finish.{_LOCAL_GATEWAY_HINT}")
         _emit("error", msg, level="error")
         return {"error": msg}, elapsed
     except requests.exceptions.RequestException as e:

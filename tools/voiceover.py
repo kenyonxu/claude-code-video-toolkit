@@ -113,28 +113,31 @@ def resolve_model_id(model_id: str) -> str:
     return sent
 
 
-def local_clone_error(provider: str, cloud: str, ref_audio, ref_text,
+def local_clone_error(provider: str, cloud: str, ref_audio,
                       brand_design: bool = False) -> str | None:
-    """CLI error message when a qwen3 local call is not clone-only, else None.
+    """CLI error message when a local voice call is not clone-only, else None.
 
-    The local gateway implements voice clone only (P2): built-in speakers
-    and voice design stay cloud features. ElevenLabs and cloud qwen3 are
-    never affected.
+    confucius4 is the only local TTS provider: it needs --ref-audio and no
+    ref_text. qwen3 no longer has a local route (the gateway TTS route moved
+    to Confucius4-TTS). ElevenLabs, 60db and cloud qwen3 are never affected.
     """
-    if provider != "qwen3" or cloud != "local":
+    if provider == "confucius4":
+        if cloud != "local":
+            return ("confucius4 runs on the local gateway only: pass"
+                    f" --cloud local (requested cloud: {cloud})")
+        if brand_design:
+            return ("--provider confucius4 supports voice clone only; brand"
+                    " clone.design (VoiceDesign) is not available locally."
+                    " Provide --ref-audio, or use a cloud provider for this"
+                    " voice.")
+        if not ref_audio:
+            return ("--provider confucius4 supports voice clone only:"
+                    " --ref-audio is required (built-in speakers and voice"
+                    " design are not available locally).")
         return None
-    if brand_design:
-        return (
-            "--cloud local supports voice clone only; brand clone.design"
-            " (VoiceDesign) is not available on the local gateway. Provide"
-            " --ref-audio/--ref-text, or drop --cloud local for this voice."
-        )
-    if not ref_audio or not ref_text:
-        return (
-            "--cloud local supports voice clone only: --ref-audio and"
-            " --ref-text are both required (built-in speakers and voice"
-            " design are cloud-only)."
-        )
+    if provider == "qwen3" and cloud == "local":
+        return ("qwen3 no longer has a local route: use --provider"
+                " confucius4 --cloud local for local voice clone.")
     return None
 
 
@@ -735,7 +738,7 @@ def generate_single_audio_qwen3(
     progress=None,
 ) -> dict:
     """Generate a single audio file from script text using Qwen3-TTS. Returns result dict."""
-    error = local_clone_error("qwen3", cloud, ref_audio, ref_text)
+    error = local_clone_error("qwen3", cloud, ref_audio)
     if error:
         return {"success": False, "error": error}
 
@@ -785,7 +788,7 @@ def generate_batch_audio_qwen3(
 
     Returns a list of result dicts matching the input order.
     """
-    error = local_clone_error("qwen3", cloud, ref_audio, ref_text)
+    error = local_clone_error("qwen3", cloud, ref_audio)
     if error:
         return [{"success": False, "error": error}]
 
@@ -855,7 +858,7 @@ def process_scene_directory(
     progress=None,
 ) -> list[dict]:
     """Process all .txt files in directory, generate .mp3 for each."""
-    error = local_clone_error("qwen3", cloud, ref_audio, ref_text)
+    error = local_clone_error("qwen3", cloud, ref_audio)
     if error:
         return [{"success": False, "error": error}], 0.0, 0
 
@@ -1149,7 +1152,7 @@ def main():
                     # The local gateway is clone-only (P2): refuse instead of
                     # silently generating a cloud reference.
                     design_guard = local_clone_error(
-                        provider, args.cloud, None, None, brand_design=True)
+                        provider, args.cloud, None, brand_design=True)
                     if design_guard:
                         print(f"Error: {design_guard}", file=sys.stderr)
                         sys.exit(1)
@@ -1258,8 +1261,7 @@ def main():
     # Local gateway is clone-only (P2): every qwen3 local path (single,
     # scene-dir, batch, brand) must carry a reference voice.
     if provider == "qwen3":
-        guard = local_clone_error(provider, args.cloud, args.ref_audio,
-                                  args.ref_text)
+        guard = local_clone_error(provider, args.cloud, args.ref_audio)
         if guard:
             print(f"Error: {guard}", file=sys.stderr)
             sys.exit(1)
