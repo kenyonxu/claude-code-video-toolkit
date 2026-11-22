@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 GATEWAY_DIR = Path(__file__).resolve().parents[1]
 
 DEFAULT_BASE_URL = "http://127.0.0.1:9188"
+DEFAULT_TTS_WORKER_URL = "http://127.0.0.1:8765"
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 ACTION_SET_MODELS_ROOT = (
@@ -37,6 +38,7 @@ class SettingsError:
 @dataclass(frozen=True)
 class GatewaySettings:
     base_url: str
+    tts_worker_url: str
     models_root: str | None
     base_url_valid: bool
     models_root_valid: bool
@@ -90,6 +92,18 @@ def load_settings(env: Mapping[str, str] | None = None,
             ACTION_FIX_BASE_URL,
         ))
 
+    raw_worker = (env.get("CONFUCIUS4_TTS_BASE_URL", "").strip()
+                  or DEFAULT_TTS_WORKER_URL)
+    tts_worker_url = raw_worker.rstrip("/")
+    if not _base_url_ok(tts_worker_url):
+        errors.append(SettingsError(
+            "config_invalid",
+            f"CONFUCIUS4_TTS_BASE_URL must be an http loopback URL like"
+            f" {DEFAULT_TTS_WORKER_URL}, without credentials, query, fragment"
+            f" or a path; got {tts_worker_url!r}.",
+            "Fix CONFUCIUS4_TTS_BASE_URL in local-gateway/.env.",
+        ))
+
     raw_root = env.get("COMFYUI_MODELS_ROOT", "").strip()
     models_root: str | None = None
     models_root_valid = False
@@ -119,6 +133,7 @@ def load_settings(env: Mapping[str, str] | None = None,
 
     return GatewaySettings(
         base_url=base_url,
+        tts_worker_url=tts_worker_url,
         models_root=models_root,
         base_url_valid=base_url_valid,
         models_root_valid=models_root_valid,

@@ -15,6 +15,7 @@ from pathlib import Path
 
 from . import registry
 from .comfyui import ComfyUIError, ComfyUIClient, input_values as _input_values
+from .confucius_client import ConfuciusError
 from .config import GatewaySettings
 
 ClientFactory = Callable[[str], ComfyUIClient]
@@ -137,10 +138,11 @@ def _check_nodes(entry: registry.ModelEntry, object_info_cache: dict,
 
 
 def build_health_payload(settings: GatewaySettings,
-                         client_factory: ClientFactory) -> tuple[dict, int]:
+                         client_factory: ClientFactory,
+                         tts_client_factory: ClientFactory) -> tuple[dict, int]:
     """Run every check and return (payload, 200 or 503). Never raises."""
     try:
-        return _build(settings, client_factory)
+        return _build(settings, client_factory, tts_client_factory)
     except Exception as e:
         logger.exception("Unexpected error while building local gateway health")
         message = f"{type(e).__name__}: {str(e)[:200]}"
@@ -153,6 +155,11 @@ def build_health_payload(settings: GatewaySettings,
                 "version": None,
                 "gpu": None,
                 "ram": None,
+            },
+            "tts_backend": {
+                "base_url": settings.tts_worker_url,
+                "status": "unreachable",
+                "sample_rate": None,
             },
             "models": {entry.key: _model_skeleton()
                        for entry in registry.MODEL_ENTRIES},
@@ -173,7 +180,8 @@ def build_health_payload(settings: GatewaySettings,
 
 
 def _build(settings: GatewaySettings,
-           client_factory: ClientFactory) -> tuple[dict, int]:
+           client_factory: ClientFactory,
+           tts_client_factory: ClientFactory) -> tuple[dict, int]:
     errors = [_err(e.code, "config", e.message, e.action) for e in settings.errors]
 
     dependencies = _tool_dependencies()
@@ -220,6 +228,33 @@ def _build(settings: GatewaySettings,
         except ComfyUIError as e:
             errors.append(_comfyui_error(e))
 
+    tts_backend = {"base_url": settings.tts_worker_url,
+                   "status": "unreachable", "sample_rate": None}
+    try:
+        tts_health = tts_client_factory(settings.tts_worker_url).health()
+        tts_backend["status"] = str(tts_health.get("status"))
+        sample_rate = tts_health.get("sample_rate")
+        tts_backend["sample_rate"] = (sample_rate
+                                      if isinstance(sample_rate, int)
+                                      else None)
+        if (tts_backend["status"] != "ok"
+                or tts_backend["sample_rate"] != 22050):
+            errors.append(_err(
+                "tts_backend_unavailable", "tts_backend",
+                "Confucius4-TTS worker /health must report status=ok and"
+                f" sample_rate=22050; got {tts_backend!r}.",
+                "Wait for the worker to finish loading and verify its"
+                " inference config uses a 22050 Hz target sample rate.",
+            ))
+    except ConfuciusError as e:
+        errors.append(_err(
+            e.code, "tts_backend",
+            f"Confucius4-TTS worker is not serving clones: {e.message}",
+            "Start the worker with local-gateway/start_confucius_worker.bat"
+            " (127.0.0.1:8765), wait for its /health to report ok, then"
+            " re-check this endpoint.",
+        ))
+
     models: dict[str, dict] = {}
     for entry in registry.MODEL_ENTRIES:
         if settings.models_root_valid and settings.models_root is not None:
@@ -257,15 +292,33 @@ def _build(settings: GatewaySettings,
         else:
             nodes_ready, missing_nodes, missing_values = False, [], []
 
-        models[entry.key] = {
-            "ready": files_ready and nodes_ready,
-            "files_ready": files_ready,
-            "nodes_ready": nodes_ready,
-            "optional_files_present": optional_present,
-            "missing_files": missing_files,
-            "missing_nodes": missing_nodes,
-            "missing_loader_values": missing_values,
-        }
+        if entry.capability == "tts":
+            # Confucius owns its model/cache independently of ComfyUI. Neither
+            # COMFYUI_MODELS_ROOT nor ComfyUI node metadata gates TTS readiness.
+            ready = (tts_backend["status"] == "ok"
+                     and tts_backend["sample_rate"] == 22050)
+            models[entry.key] = {
+                "ready": ready,
+                "files_ready": ready,
+                "nodes_ready": ready,
+                "optional_files_present": [],
+                "missing_files": [],
+                "missing_nodes": [],
+                "missing_loader_values": [],
+            }
+        else:
+            # Image/video readiness is files-only: their node gaps are
+            # handled by their own route preflight (P3/P4), never by the
+            # global ready flag (the TTS route must not need ComfyUI).
+            models[entry.key] = {
+                "ready": files_ready,
+                "files_ready": files_ready,
+                "nodes_ready": nodes_ready,
+                "optional_files_present": optional_present,
+                "missing_files": missing_files,
+                "missing_nodes": missing_nodes,
+                "missing_loader_values": missing_values,
+            }
 
     models_ready = all(m["ready"] for m in models.values())
     dependencies_ready = all(dependencies.values())
@@ -278,13 +331,17 @@ def _build(settings: GatewaySettings,
         }
         for route in registry.ROUTE_TARGETS
     }
-    ready = (settings.config_valid and comfyui["reachable"]
-             and models_ready and dependencies_ready)
+    # P2 explicitly supersedes P1's comfyui.reachable conjunct: the
+    # Confucius worker is independent, so a stopped ComfyUI is diagnostic
+    # only. Declared image/video files still feed models_ready; their node
+    # gaps stay diagnostic until P3/P4 preflight.
+    ready = settings.config_valid and models_ready and dependencies_ready
 
     payload = {
         "ready": ready,
         "models_ready": models_ready,
         "comfyui": comfyui,
+        "tts_backend": tts_backend,
         "models": models,
         "dependencies": dependencies,
         "routes": routes,

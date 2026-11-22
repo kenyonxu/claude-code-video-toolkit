@@ -4,9 +4,10 @@ No filesystem access, no network, no plugin mechanism. File paths are
 relative to COMFYUI_MODELS_ROOT with forward slashes; required_options values
 are the exact strings ComfyUI lists in the node input's choice list, which
 for first-release weights is the bare filename (loader choices are relative
-to their own model folder). The P1 node sets are the health baseline only;
-P2-P4 must re-verify /object_info before building workflows. Cloud API nodes
-never belong here.
+to their own model folder). The image/video node sets are the health
+baseline only; P3/P4 must re-verify /object_info before building workflows.
+The TTS entry describes the Confucius4-TTS worker, not ComfyUI nodes. Cloud
+API nodes never belong here.
 """
 from __future__ import annotations
 
@@ -28,9 +29,8 @@ class ModelEntry:
     capability: str
     required_files: tuple[str, ...] = ()
     required_directories: tuple[str, ...] = ()
-    # Directories that must exist AND contain at least one entry (P2 clone
-    # weights: an empty dir makes the AILab node fall back to
-    # snapshot_download, which the gateway must not trigger).
+    # Directories that must exist and contain at least one entry when used by
+    # a model entry. Confucius owns its HF cache and leaves this empty.
     required_nonempty_directories: tuple[str, ...] = ()
     optional_files: tuple[str, ...] = ()
     required_nodes: tuple[str, ...] = ()
@@ -41,28 +41,16 @@ class ModelEntry:
     output_formats: tuple[str, ...] = ()
     max_batch_items: int = 0
     deadline_chunk_seconds: int = 0
+    languages: tuple[str, ...] = ()
 
 
 MODEL_ENTRIES: tuple[ModelEntry, ...] = (
     ModelEntry(
-        key="qwen3-tts-1.7B",
+        key="confucius4-tts",
         capability="tts",
-        required_directories=(),
-        required_nonempty_directories=(
-            "TTS/Qwen3-TTS/Qwen3-TTS-12Hz-1.7B-Base",
-            "TTS/Qwen3-TTS/Qwen3-TTS-Tokenizer-12Hz",
-        ),
-        required_nodes=(
-            "AILab_Qwen3TTSVoiceClone_Advanced",
-            "LoadAudio",
-            "SaveAudioAdvanced",
-        ),
-        required_options=(
-            RequiredOption("AILab_Qwen3TTSVoiceClone_Advanced", "model_size",
-                           ("1.7B",)),
-            RequiredOption("SaveAudioAdvanced", "format", ("mp3", "flac")),
-        ),
         modes=("clone",),
+        languages=("zh", "en", "ja", "ko", "de", "fr", "es", "id",
+                   "it", "ms", "pt", "ru", "th", "vi"),
         output_formats=("mp3", "wav"),
         max_batch_items=8,
         deadline_chunk_seconds=270,
@@ -144,16 +132,15 @@ MODEL_ENTRIES: tuple[ModelEntry, ...] = (
 )
 
 ROUTE_TARGETS: dict[str, str] = {
-    "tts": "qwen3-tts-1.7B",
+    "tts": "confucius4-tts",
     "image_generate": "qwen-image-2.1",
     "image_edit": "qwen-image-2.1",
     "video": "minimax-h3-fl2va",
 }
 
-# Routes whose POST endpoint actually works. tts flipped after the three real
-# clone generations, health and full regression of the P2 acceptance passed;
-# image and video stay false until their own phases.
-IMPLEMENTED_ROUTES: frozenset[str] = frozenset({"tts"})
+# Routes whose POST endpoint actually works. Confucius4-TTS remains
+# unimplemented until the new spec section 14 acceptance passes.
+IMPLEMENTED_ROUTES: frozenset[str] = frozenset()
 
 
 def required_nodes() -> tuple[str, ...]:

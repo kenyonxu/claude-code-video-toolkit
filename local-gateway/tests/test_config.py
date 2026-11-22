@@ -113,5 +113,33 @@ class ModelsRootTests(unittest.TestCase):
         self.assertEqual(s.models_root, os.path.join(tmp, "models"))
 
 
+class TtsWorkerUrlTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def env(self, **overrides):
+        env = {"COMFYUI_MODELS_ROOT": self.tmp.name}
+        env.update(overrides)
+        return env
+
+    def test_default_worker_url_is_local_8765(self):
+        settings = config.load_settings(env=self.env())
+        self.assertEqual(settings.tts_worker_url, "http://127.0.0.1:8765")
+        self.assertTrue(settings.config_valid)
+
+    def test_worker_url_env_override(self):
+        settings = config.load_settings(env=self.env(
+            CONFUCIUS4_TTS_BASE_URL="http://localhost:8765"))
+        self.assertEqual(settings.tts_worker_url, "http://localhost:8765")
+
+    def test_invalid_worker_url_is_config_invalid(self):
+        settings = config.load_settings(env=self.env(
+            CONFUCIUS4_TTS_BASE_URL="http://10.0.0.5:8765"))
+        self.assertFalse(settings.config_valid)
+        self.assertIn("CONFUCIUS4_TTS_BASE_URL",
+                      " ".join(e.message for e in settings.errors))
+
+
 if __name__ == "__main__":
     unittest.main()
