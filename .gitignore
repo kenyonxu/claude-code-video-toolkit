@@ -109,6 +109,9 @@ kits/*
 # one-off scripts). Tools that write to the repo root should target scratch/.
 scratch/
 
+# Confucius4-TTS relative checkpoint junction (local model weights)
+/checkpoints/
+
 # Keep directory structure
 !projects/.gitkeep
 
