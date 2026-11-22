@@ -307,13 +307,13 @@ export RUNPOD_API_KEY= RUNPOD_QWEN3_TTS_ENDPOINT_ID= RUNPOD_FLUX2_ENDPOINT_ID=
 
 uv run tools/verify_setup.py --local --json > "$S/verify.json"
 
-# voice.refAudio 指向只读参考音频（Confucius 规格 14.1 素材，按需替换为本机素材路径）；
+# voice.refAudio 运行前替换为可读的本机参考音频路径（素材要求见 Confucius 规格 14.1；此处为占位路径）。
 # confucius4 local clone 不接受 speaker/ref_text/sampling。
 cat > "$S/spec.json" <<'JSON'
 {
   "title": "Local provider smoke test",
   "format": "16:9",
-  "voice": {"provider": "confucius4", "cloud": "local", "lang": "zh", "refAudio": "C:/Users/kenyo/Downloads/Music/voice_02.mp3"},
+  "voice": {"provider": "confucius4", "cloud": "local", "lang": "zh", "refAudio": "path/to/reference.mp3"},
   "backgrounds": "local",
   "captions": {"enabled": false},
   "music": false,
