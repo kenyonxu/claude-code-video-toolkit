@@ -63,9 +63,10 @@ class ScenesTest(unittest.TestCase):
 class CheckHelpersTest(unittest.TestCase):
     def test_project_number_from_client_id(self):
         import youtube_upload as yu
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
-            json.dump({"installed": {"client_id": "495036436430-abc.apps.googleusercontent.com"}}, f)
-        self.assertEqual(yu.cloud_project_number(f.name), "495036436430")
+        with tempfile.TemporaryDirectory() as d:
+            secrets = Path(d) / "client.json"
+            secrets.write_text(json.dumps({"installed": {"client_id": "495036436430-abc.apps.googleusercontent.com"}}))
+            self.assertEqual(yu.cloud_project_number(str(secrets)), "495036436430")
         self.assertIsNone(yu.cloud_project_number("/nope.json"))
 
     def test_enable_url(self):

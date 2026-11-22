@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,7 @@ class RulesTest(unittest.TestCase):
 class FilesTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
 
     def write(self, name: str, text: str) -> Path:
         p = self.tmp / name
