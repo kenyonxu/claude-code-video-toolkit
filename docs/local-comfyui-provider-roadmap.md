@@ -11,7 +11,7 @@
 |---|---|---|---|
 | **P0** 仓库准备 | fork、upstream、工作分支、设计文档首 commit | origin/upstream URL 与分支名正确 | S |
 | **P1** 链路骨架 | `cloud_gpu.py` local 分发、网关与注册表、ComfyUI 客户端、`/health` | `curl --fail-with-body .../health` 返回 `ready=true`、`models_ready=true`；缺模型测试给出可执行修复提示 | M |
-| **P2** TTS 路由 | `/tts/generate`、clone 单模式、`qwen3_tts.py` 与 `voiceover.py` 接 local | clone MP3、clone WAV、voiceover clone 三项真实生成通过；local clone 不触发外部上传 | M |
+| **P2** TTS 路由 | 独立 Confucius4-TTS worker（基础 Transformers）+ `/tts/generate` clone、`confucius4_tts.py` 与 `voiceover.py` 接 local | qwen3 已移除 local：`confucius4_tts` clone MP3、clone WAV、voiceover clone 三项真实生成通过；local clone 不触发外部上传 | M |
 | **P3** 图像路由 | `/image/generate`、`/image/edit`、新 `tools/qwen_image.py` | generate 出 1024x1024 PNG；edit 用该图产出新 PNG | M |
 | **P4** 视频路由 | `/video/generate`、新 `tools/h3_video.py` | t2v/i2v 出 MP4；t2v 实测 124 帧、24 fps | L |
 | **P5** 集成收尾 | `video_job` 全链路、零成本计量、`verify_setup --local`、registry、文档与 CI | Local 检查退出 0；异步 job 到 `phase=done`，estimate/actual/receipts 均为数值 0；MP4 有效 | L |
@@ -61,12 +61,12 @@ uv run tools/copy_lint.py \
 ### P1 链路骨架（walking skeleton）
 
 - [x] `tools/cloud_gpu.py` 增加 `_LOCAL_ENV_VARS`，映射固定为：
-  - `qwen3_tts` → `LOCAL_TTS_ENDPOINT_URL`
+  - `confucius4_tts` → `LOCAL_TTS_ENDPOINT_URL`
   - `qwen_image` → `LOCAL_IMAGE_ENDPOINT_URL`
   - `image_edit` → `LOCAL_IMAGE_EDIT_ENDPOINT_URL`
   - `h3_video` → `LOCAL_VIDEO_ENDPOINT_URL`
 - [x] `get_provider_config("local", tool_name)` 与 `call_cloud_endpoint()` 接入 `_call_local`。保持 `_call_modal` 的 `(result_dict, elapsed_seconds)` 返回形态、payload 解包和错误字典约定；缺少 URL、连接失败、HTTP/JSON 错误返回 `{"error": ...}`，未知 provider 仍抛 `ValueError`，提示包含 local。
-- [x] `_call_local` 不使用 token，不显示 Modal 专属提示；网关不可达时提示先启动 ComfyUI 与 `start_gateway.bat`。loopback 请求不得继承 HTTP 代理；解析响应后先检查应用层 `error`，再发成功进度事件。
+- [x] `_call_local` 不使用 token，不显示 Modal 专属提示；网关不可达时提示按能力先启动 Confucius worker 或 ComfyUI，再启动 `start_gateway.bat`。loopback 请求不得继承 HTTP 代理；解析响应后先检查应用层 `error`，再发成功进度事件。
 - [x] `local-gateway/` 独立 uv 子项目：`pyproject.toml`、lockfile、FastAPI/uvicorn/requests，无 torch；默认只绑定 `127.0.0.1:8123`。阻塞的 requests/poll 放在普通 `def` 端点或线程中，不得阻塞 `/health`。
 - [x] 网关配置：`COMFYUI_BASE_URL` 默认 `http://127.0.0.1:9188`，`COMFYUI_MODELS_ROOT` 指向本机 `models/`。后者用于真实文件检查，不在代码或 tracked 配置中写死 `E:\ugit\...`。
 - [x] 原创 ComfyUI 客户端：submit `/prompt`、poll `/history`、view `/view`、upload `/upload/image`。每次 HTTP 调用有独立短超时；长任务的总 deadline 在各路由实现。
@@ -85,44 +85,19 @@ curl --noproxy '*' --fail-with-body http://127.0.0.1:8123/health
 
 响应须含 GPU 信息、附录 B 全部必需项、`ready=true`、`models_ready=true`。另用临时测试配置制造缺模型，确认 HTTP 503 与修复提示；不得通过改名真实权重制造故障。
 
-### P2 TTS 路由（clone-only 修订）
+### P2 TTS 路由（Confucius4-TTS 修订）
 
-依据 2026-11-17 clone-only 设计规格（docs/superpowers/specs/2026-11-17-local-comfyui-p2-design.md）执行，CustomVoice 与 VoiceDesign 移出本期。
+依据 2026-11-18 Confucius4 设计规格（docs/superpowers/specs/2026-11-18-confucius4-tts-design.md）执行。旧 Qwen ComfyUI 路线（AILab 节点、ref_text、SaveAudioAdvanced）已废止；`qwen3_tts` 只保留 Modal/RunPod。
 
-- [x] **开工第一步**：用 `/object_info` 校验 `AILab_Qwen3TTSVoiceClone_Advanced`、`LoadAudio`、`SaveAudioAdvanced` 及真实参数。校验不过，不写路由。
-- [x] `POST /tts/generate`：仅 `mode=clone`；注册表首条目 `qwen3-tts-1.7B`，固定 `model_size=1.7B`，`modes=(clone,)`，`output_formats=(mp3, wav)`。非 clone 返回 422 `mode_unsupported`；`ref_audio_url`/`r2` 返回 422 `external_url_unsupported`。
-- [x] 模板原创生成，不复制第三方 example workflow JSON。MP3 由 ComfyUI 直接输出（`format="mp3"` + `format.quality="V0"`）；WAV 由 FLAC 中间文件用 FFmpeg `pcm_s16le` 真实转码，不改扩展名伪装格式。
-- [x] clone：`ref_audio_base64` 上传至 ComfyUI input，再由 `LoadAudio` 提供 AUDIO；每请求上传一次，批量逐项有序执行，任一失败无部分结果；deadline 为 `270 * max(1, item_count // 3 + 1)`，覆盖 lock、上传、submit/poll/view/ffprobe/FFmpeg；单进程 lock 串行化。
-- [x] `tools/qwen3_tts.py`：`--cloud` 加 local，新增自由字符串 `--model` 并传入 payload。**local clone 直接编码参考音频，跳过 `upload_to_storage()` 和结果 R2 上传**；云路径保持原行为；`--setup --cloud local` 退出码 2。
-- [x] `tools/voiceover.py`：`--cloud` 加 local，新增 `--qwen-model` 透传 Qwen 变体，新增默认 300 的 `--timeout`；local 所有 clone 路径必须 `--ref-audio`+`--ref-text`；brand VoiceDesign 与内置 speaker 在 local 下拒绝。现有 `--model` 是 ElevenLabs 专用，不复用。
-- [x] 单测：模板补丁、output format、model/timeout 透传、local clone base64 分支、外部上传下载函数零调用、网关错误契约、health dependencies 与 fallback 工厂。全部 fake 网络。
+- [ ] 独立 worker（`local-gateway/local_gateway/confucius_worker.py`，端口 8765，隔离环境 `E:/GitHub/_confucius4_tts_venv`，由已验证 `confuciustts` 克隆）：加载一次 `ConfuciusTTS`，`/health` 三态，multipart `/api/tts` 返回 PCM16 mono 22050 Hz WAV；`HF_HUB_CACHE=<Confucius根>/models/hf` + 两个离线变量，不在生成时下载。
+- [ ] 网关 `ConfuciusClient` + `/tts/generate`：仅 `mode=clone`，注册表 `confucius4-tts`，14 语言，`max_batch_items=8`，deadline `270 * max(1, item_count // 3 + 1)`，逐项 multipart、任一失败无部分结果；网关进程无 torch。
+- [ ] 音频：WAV 直通（PCM16/mono/22050 校验）、MP3 用 FFmpeg libmp3lame 真转码，ffprobe 时长 > 0，临时文件 + 原子替换，64/128 MiB 界限。
+- [ ] `tools/confucius4_tts.py`：`--cloud local`、`--model confucius4-tts`、`--lang zh`、`--ref-audio`、`--output`、`--format mp3|wav`、`--timeout 300`；无 ref_text/speaker/instruct/sampling；`cloud_gpu` 的 TTS local 映射只属 `confucius4_tts`。
+- [ ] `tools/voiceover.py`：provider `confucius4` + `--tts-model`（取代 `--qwen-model`）；local 所有 single/batch/scene/brand clone 必须 `--ref-audio`、不要求 `--ref-text`；内置 speaker 与 brand VoiceDesign 在 local 下拒绝；`qwen3 + local` 不可用。
+- [ ] `/health` 新增 `tts_backend: {base_url, status, sample_rate}`；TTS 就绪 = worker ok + 22050 Hz + ffmpeg/ffprobe，独立于 ComfyUI 模型根目录；ComfyUI 可达性和图像/视频节点缺项不阻塞 P2，图像/视频声明文件仍计入 `models_ready`。
+- [ ] 单测：worker/client 契约、请求校验矩阵、批量顺序与上限、deadline/lock、音频管线、CLI/voiceover 透传与提前拒绝、health 聚合。全部 fake 网络。
 
-验收（三项真实 clone 生成，素材见规格第 14 节）：
-
-```bash
-set -euo pipefail
-mkdir -p scratch/local-comfyui/p2
-REF_AUDIO='C:/Users/kenyo/Downloads/Music/voice_02.mp3'
-REF_TEXT='为什么不用suno及类似的音乐生成平台? 因为贵，对游戏需要的音乐生成不友好，而且suno这种直接生成成曲的基本无法对成品做调整'
-
-uv run tools/qwen3_tts.py --cloud local --model qwen3-tts-1.7B \
-  --text "这段声音是在本地网关生成的克隆音频，用来确认参考音频上传和声音克隆已经完整跑通。" \
-  --ref-audio "$REF_AUDIO" --ref-text "$REF_TEXT" \
-  --output scratch/local-comfyui/p2/clone.mp3
-
-uv run tools/qwen3_tts.py --cloud local --model qwen3-tts-1.7B \
-  --text "这是同一条本地克隆链路生成的 WAV 文件，用来验证 FLAC 到 WAV 的真实转码过程。" \
-  --ref-audio "$REF_AUDIO" --ref-text "$REF_TEXT" --format wav \
-  --output scratch/local-comfyui/p2/clone.wav
-
-printf '%s\n' '测试 voiceover 本地克隆链路' > scratch/local-comfyui/p2/voiceover.txt
-uv run tools/voiceover.py --provider qwen3 --cloud local --qwen-model qwen3-tts-1.7B \
-  --script scratch/local-comfyui/p2/voiceover.txt \
-  --ref-audio "$REF_AUDIO" --ref-text "$REF_TEXT" \
-  --output scratch/local-comfyui/p2/voiceover.mp3
-```
-
-三次生成都须成功，ffprobe 时长大于 0，clone.wav 编码为 `pcm_s16le`；最终 `/health` 断言见规格第 14.3 节。checkbox 只能在三项生成、health 与完整回归全部通过后勾选。
+验收（三项真实 clone，素材见规格第 14 节；先启动 8765 worker 再启动 8123 gateway，P2 不需要 ComfyUI）：按规格 14.2 执行 `tools/confucius4_tts.py` MP3/WAV 与 `tools/voiceover.py` clone，按 14.3 断言 ffprobe 编码/采样率/声道/时长与 `/health` JSON，并跑双测试域、ruff 与 copy lint。checkbox 只能在三项生成、health 与完整回归全部通过后勾选。
 
 ### P3 图像路由 + `qwen_image.py`
 
@@ -198,7 +173,7 @@ done
   - `_visual_args()` 调用正确 CLI，固定 `--cloud local`，传输出路径、尺寸、seed/steps、H3 帧参数及每场景 `visual.model`，fallback cost 为 0。
   - `_NEEDS` 加三组 local 条目；`missing_for()` 加 qwen/h3 分支，缺 URL 时在 submit 前拒绝。
   - `host_capabilities()`：`kinds` 加 qwen/h3；`voices["qwen3"]` 必须加 local；`flux` 与 `music` 不变。同步 `presets()["visual_kinds"]`。
-  - `voice.model` 经 `voiceover.py --qwen-model` 透传。`visual.provider` 不新增语义，qwen/h3 kind 自身表示 local。
+  - `voice.model` 经 `voiceover.py --tts-model` 透传。`visual.provider` 不新增语义，qwen/h3 kind 自身表示 local。
   - H3 的 `run_tool` 外层 timeout 大于 CLI/HTTP timeout；`_STEP_SECONDS` 与 `step_model()` 识别 qwen/h3，避免沿用 FLUX 的约 20 秒 ETA。
 - [ ] 估价与收据：`qwen3 + local` voice、qwen、h3 显式估价为 0；现有 Modal/RunPod 价格不变。更新 `PRICES_VERSION`，统一 estimate、fallback actual、`remaining_estimates()` 与 receipts，local 收据的 `cost_usd` 必须是数值 `0.0`，不是 `null`。
 - [ ] `tools/verify_setup.py` 增加 `--local --json`：只检查四个 LOCAL_*、loopback HTTP URL、`/health`、模型清单及三条路由的 `implemented` 状态，不跑 Modal/RunPod/R2/smoke test。输出 `summary.local.ready`；失败退出 1，成功退出 0。full check 的 voice/summary 也识别 qwen3 local。
@@ -247,9 +222,8 @@ done
 
 | 差异点 | ccvt 公共契约 | ComfyUI/H3 实际处理 |
 |---|---|---|
-| TTS 模式 | 仅 `mode=clone`（VoiceClone 单模式） | P2 收敛为 clone 单模式；custom_voice 与 voice_design 不属于本地能力，一律 422 `mode_unsupported`，不进入 workflow |
-| TTS clone | `text` + `ref_audio_base64` + `ref_text` | `text` 补丁到 `target_text`；上传 input 后由 `LoadAudio` 输出 AUDIO，接 `reference_audio` 与 `reference_text`；默认 `x_vector_only=false` |
-| TTS 格式 | `output_format=mp3|wav` | `SaveAudioAdvanced` 支持 flac/mp3/opus；wav 由网关明确转码，不改名伪装 |
+| TTS clone（Confucius4） | `text` + `ref_audio_base64` + `language`（14 小写码）+ 可选 `model=confucius4-tts` | 网关逐项 multipart 转发 worker `/api/tts`；custom_voice、voice_design、ref_text、speaker、instruct 与 sampling 参数在本地不可用（`mode_unsupported`） |
+| TTS 格式 | `output_format=mp3\|wav` | worker 固定输出 PCM16 mono 22050 Hz WAV；MP3 由网关用 libmp3lame 真转码，不改名伪装 |
 | 图像分辨率 | `width` + `height` | 只补丁 latent/canvas；`TextEncodeQwenImage21.resolution` 独立控制参考图缩放，默认 1024，不是输出宽高别名 |
 | CLIP 类型 | 注册表模型条目 | Qwen Image 用 `CLIPLoader.type=qwen_image`，H3 用 `minimax`，不从文件名猜测 |
 | H3 帧数 | `num_frames` | 节点 `length` 默认 124，min 5、max 3600，向上对齐 `17k+5`；训练区间约 124-362 |
@@ -257,13 +231,13 @@ done
 | H3 尺寸 | `width` + `height` | 32 倍数，默认节点为 1344x768，不继承 LTX2 约束 |
 | quality/steps | `quality`、可选 `num_inference_steps` | quality 选注册表推荐步数，显式 steps 覆盖默认值，响应返回实际步数 |
 
-H3 网格、24 fps 与 `CLIPLoader.type` 已于 2026-11-17 通过本机源码和 `/object_info` 复核；TTS VoiceClone 单模式、`target_text`、保存节点、Qwen resolution 语义及 loader 权重清单也已通过运行时元数据复核。附录 B 文件与 TTS 目录均在文件系统逐项确认。TTS 三项真实 clone 生成已于 2026-11-18 通过（见 P2 验收）；图像与视频仍未运行真实生成。
+H3 网格、24 fps 与 `CLIPLoader.type` 已于 2026-11-17 通过本机源码和 `/object_info` 复核；Qwen resolution 语义及 loader 权重清单也已通过运行时元数据复核。旧 TTS 节点复核结论随 Qwen 路线废止。附录 B 文件与 TTS 目录均在文件系统逐项确认。TTS 三项真实 clone 生成已于 2026-11-18 通过（见 P2 验收）；图像与视频仍未运行真实生成。
 
 ## 附录 B：`/health` 模型检查清单
 
 以下路径均相对 `COMFYUI_MODELS_ROOT`。健康检查同时验证文件存在与相关 `/object_info` 节点/loader 可用：
 
-- TTS：`TTS/Qwen3-TTS/` 目录及三种 AILab 节点。
+- TTS：Confucius4-TTS worker `127.0.0.1:8765`（仓库内 `models/hf` 缓存 T2S/S2A、w2v-bert-2.0、CAMPPlus、BigVGAN；`HF_HUB_CACHE` 指向该目录，不依赖 COMFYUI_MODELS_ROOT 或用户 home cache）。
 - 图像：`diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors`、`text_encoders/qwen3.5_9b_qwen_image_2.1_pe_t2i.int8_convrot.safetensors`、`text_encoders/qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.safetensors`、`vae/qwen_image_2.1_vae_bf16.safetensors`。
 - 视频：`diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors`、`text_encoders/qwen3vl_32b_minimax_h3_int8_convrot.safetensors`、`vae/minimax_h3_video_vae_fp16.safetensors`、`vae/minimax_h3_image_vae_fp16.safetensors.safetensors`。最后一个双扩展名是本机实测文件名，不在代码里擅自修正。
 - 可选视频音频：`vae/minimax_h3_audio_vae_fp32.safetensors` 已在运行时发现且文件存在。首版不接 H3 生成音轨，因此只报告其状态，不纳入 P0-P5 `models_ready` 门槛。
